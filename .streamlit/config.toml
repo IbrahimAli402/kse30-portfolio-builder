@@ -1,0 +1,60 @@
+# KSE 100 Portfolio Builder — theme
+# All styling lives here (no injected CSS). Tokens documented in DESIGN.md.
+
+[server]
+headless = true
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+# Body / UI / numbers
+font = "Instrument Sans:https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400..700&display=swap, Aptos, Segoe UI, sans-serif"
+# Headings
+headingFont = "Newsreader:https://fonts.googleapis.com/css2?family=Newsreader:opsz%2Cwght@6..72%2C400..600&display=swap, Georgia, serif"
+headingFontSizes = ["2.25rem", "1.5rem", "1.25rem", "1.125rem", "1rem", "0.875rem"]
+headingFontWeights = [500, 500, 500, 500, 500, 500]
+baseFontSize = 16
+baseFontWeight = 400
+metricValueFontSize = "1.875rem"
+metricValueFontWeight = 600
+baseRadius = "0.5rem"
+buttonRadius = "0.5rem"
+showWidgetBorder = false
+linkUnderline = false
+
+[theme.light]
+base = "light"
+primaryColor = "#b0532f"
+backgroundColor = "#faf9f5"
+secondaryBackgroundColor = "#f5f3ed"
+textColor = "#2d2a26"
+borderColor = "#e3dfd7"
+dataframeBorderColor = "#e3dfd7"
+dataframeHeaderBackgroundColor = "#f5f3ed"
+codeBackgroundColor = "#f5f3ed"
+linkColor = "#b0532f"
+greenColor = "#27775a"
+redColor = "#a4412f"
+orangeColor = "#b0532f"
+grayColor = "#6b665e"
+chartCategoricalColors = ["#c96442", "#2f8f6a", "#3f6fb5", "#6b665e"]
+chartSequentialColors = ["#f0ddd4", "#e5b8a4", "#d99276", "#c96442", "#a44d2c", "#7d3a20"]
+
+[theme.dark]
+base = "dark"
+primaryColor = "#d97757"
+backgroundColor = "#1c1a17"
+secondaryBackgroundColor = "#252320"
+textColor = "#e8e6e1"
+borderColor = "#3a3733"
+dataframeBorderColor = "#3a3733"
+dataframeHeaderBackgroundColor = "#252320"
+codeBackgroundColor = "#252320"
+linkColor = "#d97757"
+greenColor = "#4fae88"
+redColor = "#d98a72"
+orangeColor = "#d97757"
+grayColor = "#a8a298"
+chartCategoricalColors = ["#d97757", "#4fae88", "#7a9bd6", "#a8a298"]
+chartSequentialColors = ["#3a2a22", "#6b3f2c", "#9c5539", "#d97757", "#e59a7f", "#f0c1af"]

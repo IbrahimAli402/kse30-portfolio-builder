@@ -1,0 +1,4 @@
+Tier,Annual_Return_%,Annual_Volatility_%,Max_Drawdown_%,Sortino_Ratio,Prob_5yr_Loss_%
+Conservative,19.4,12.0,-17.5,0.87,0.0
+Moderate,23.2,16.0,-24.9,0.93,0.0
+Aggressive,27.2,20.1,-33.7,0.97,0.0

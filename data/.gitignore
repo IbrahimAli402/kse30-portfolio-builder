@@ -1,0 +1,19 @@
+# Virtual environment (too large for GitHub, each person creates their own)
+venv/
+
+# Python cache files (auto-generated, don't need to track)
+__pycache__/
+*.pyc
+
+# Jupyter notebook checkpoints (auto-generated)
+.ipynb_checkpoints/
+
+# Raw data files (we'll document where to download them instead)
+data/raw/
+
+# Environment variables (may contain API keys)
+.env
+
+# OS files
+.DS_Store
+Thumbs.db

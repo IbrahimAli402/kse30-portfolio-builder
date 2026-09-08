@@ -160,6 +160,16 @@ def load_data():
 
 TR, RETS, RISK = load_data()
 @st.cache_data(show_spinner=False, ttl=300)
+def load_frontier_data():
+    """Load stock return matrix and compute frontier (cached)."""
+    from kse.frontier import load_stock_return_matrix, compute_efficient_frontier, compute_diversification_curve
+    returns_df, tickers = load_stock_return_matrix()
+    if returns_df.empty:
+        return None
+    frontier = compute_efficient_frontier(returns_df)
+    div_curve = compute_diversification_curve(returns_df)
+    return {"returns": returns_df, "tickers": tickers, "frontier": frontier, "div_curve": div_curve}
+@st.cache_data(show_spinner=False, ttl=300)
 def run_monte_carlo_cached(weights_tuple, tier, monthly_amount, horizon_months, method, seed=42):
     """Run Monte Carlo simulation (cached for performance)."""
     weights = {"Bull": weights_tuple[0], "Base": weights_tuple[1], "Bear": weights_tuple[2]}
@@ -965,8 +975,379 @@ with page:
             st.caption("Bear case uses nominal earnings growth directly because the "
                        "standard identity (real growth + inflation) breaks down in crisis.")
 
-    st.space("large")
-    st.caption(
+    with tab_basket:
+        st.subheader("Build a basket")
+        st.caption("Replace the index with a basket you chose. See what that does to "
+                   "return, drawdown and dividend income. Analysis tool, not a "
+                   "recommendation engine.")
+
+        try:
+            # ── Load data ─────────────────────────────────────────────────
+            stock_df = load_stock_metrics()
+            all_tickers = stock_df["ticker"].tolist()
+
+            # Get top 8 from screen, with fallback to first 8 in the list
+            try:
+                top_8 = screen_all()["Ticker"].head(8).tolist()
+            except Exception:
+                top_8 = all_tickers[:8]
+
+            # ── Stock picker ──────────────────────────────────────────────
+            selected = st.multiselect(
+                "Select stocks", all_tickers,
+                default=top_8,
+                help="Pick from the screened KSE 30 universe"
+            )
+
+            if len(selected) < 2:
+                st.warning("Select at least 2 stocks for a basket.")
+            else:
+                # ── Weights ───────────────────────────────────────────────
+                bc1, bc2 = st.columns([1, 2])
+
+                with bc1:
+                    rebalance = st.segmented_control(
+                        "Rebalancing", ["None", "Annual", "Quarterly"],
+                        default="Annual", required=True
+                    )
+
+                    weight_mode = st.segmented_control(
+                        "Weights", ["Equal", "Custom"],
+                        default="Equal", required=True
+                    )
+
+                with bc2:
+                    if weight_mode == "Equal":
+                        weights_basket = {t: 1.0 / len(selected) for t in selected}
+                    else:
+                        weights_basket = {}
+                        cols = st.columns(min(len(selected), 4))
+                        for i, ticker in enumerate(selected):
+                            with cols[i % len(cols)]:
+                                # Use 0-100 range for the slider so it displays as percentage
+                                w = st.slider(
+                                    f"{ticker}", 0.0, 100.0,
+                                    100.0 / len(selected), 5.0,
+                                    format="%.0f%%"
+                                )
+                                # Convert back to decimal for calculations
+                                weights_basket[ticker] = w / 100.0
+
+                        total_w = sum(weights_basket.values())
+                        if total_w > 0:
+                            weights_basket = {t: w / total_w for t, w in weights_basket.items()}
+
+                # ── Basket summary ─────────────────────────────────────────
+                st.divider()
+                st.markdown("**Basket composition**")
+
+                basket_data = []
+                for ticker in selected:
+                    row = stock_df[stock_df["ticker"] == ticker].iloc[0]
+                    basket_data.append({
+                        "Ticker": ticker,
+                        "Name": row["name"],
+                        "Sector": row["sector"],
+                        "Weight": f"{weights_basket[ticker]:.1%}",
+                        "Div yield": f"{row.get('dividend_yield', 0):.1%}" if pd.notna(row.get("dividend_yield")) else "—",
+                        "P/E": f"{row.get('pe', 0):.1f}" if pd.notna(row.get("pe")) else "—",
+                        "Beta": f"{row.get('beta', 0):.2f}" if pd.notna(row.get("beta")) else "—",
+                        "ROE": f"{row.get('roe', 0):.0%}" if pd.notna(row.get("roe")) else "—",
+                    })
+
+                st.dataframe(pd.DataFrame(basket_data), use_container_width=True,
+                             hide_index=True)
+
+                # ── Basket statistics ──────────────────────────────────────
+                # Calculate weighted averages, handling missing values
+                valid_stocks = []
+                for t in selected:
+                    if t in stock_df["ticker"].values:
+                        row = stock_df[stock_df["ticker"] == t].iloc[0]
+                        if pd.notna(row.get("dividend_yield")) and pd.notna(row.get("pe")) \
+                           and pd.notna(row.get("beta")) and pd.notna(row.get("max_drawdown")):
+                            valid_stocks.append(t)
+
+                if valid_stocks:
+                    avg_div = np.average(
+                        [stock_df[stock_df["ticker"] == t]["dividend_yield"].iloc[0] for t in valid_stocks],
+                        weights=[weights_basket[t] for t in valid_stocks]
+                    )
+                    avg_pe = np.average(
+                        [stock_df[stock_df["ticker"] == t]["pe"].iloc[0] for t in valid_stocks],
+                        weights=[weights_basket[t] for t in valid_stocks]
+                    )
+                    avg_beta = np.average(
+                        [stock_df[stock_df["ticker"] == t]["beta"].iloc[0] for t in valid_stocks],
+                        weights=[weights_basket[t] for t in valid_stocks]
+                    )
+                    avg_dd = np.average(
+                        [stock_df[stock_df["ticker"] == t]["max_drawdown"].iloc[0] for t in valid_stocks],
+                        weights=[weights_basket[t] for t in valid_stocks]
+                    )
+                else:
+                    avg_div = avg_pe = avg_beta = avg_dd = 0
+
+                sector_weights = {}
+                for ticker in selected:
+                    row = stock_df[stock_df["ticker"] == ticker].iloc[0]
+                    sector = row["sector"]
+                    sector_weights[sector] = sector_weights.get(sector, 0) + weights_basket[ticker]
+
+                sc1, sc2, sc3, sc4 = st.columns(4)
+                with sc1:
+                    st.metric("Avg dividend yield", f"{avg_div:.1%}")
+                with sc2:
+                    st.metric("Avg P/E", f"{avg_pe:.1f}")
+                with sc3:
+                    st.metric("Avg beta", f"{avg_beta:.2f}")
+                with sc4:
+                    st.metric("Avg max drawdown", f"{avg_dd:.0%}")
+
+                st.caption("**Sector concentration:** " + " · ".join(
+                    f"{s} {w:.0%}" for s, w in sorted(sector_weights.items(),
+                                                       key=lambda x: -x[1])
+                ))
+
+                # ── Screen scores ──────────────────────────────────────────
+                with st.expander("Stock screen scores (5-pillar)"):
+                    try:
+                        screen_df = screen_all()
+                        screen_df = screen_df[screen_df["Ticker"].isin(selected)]
+                        st.dataframe(screen_df, use_container_width=True, hide_index=True)
+                    except Exception as e:
+                        st.warning(f"Screen scores unavailable: {e}")
+
+                # ── Comparison: Basket vs Index ─────────────────────────────
+                st.divider()
+                st.markdown("**Basket vs KSE 100 comparison**")
+                st.caption("Illustrative — actual comparison requires running the SIP "
+                           "engine on the basket's total return series from PSX data.")
+
+                try:
+                    from kse.blocks import expected_return
+                    base_ret, _, _ = expected_return("Base")
+
+                    months_proj = horizon * 12
+                    monthly_ret = (1 + base_ret) ** (1/12) - 1
+                    monthly_fee = ANNUAL_FEE / 12
+
+                    idx_values = []
+                    pv_idx = 0
+                    for m in range(months_proj):
+                        pv_idx = pv_idx * (1 + monthly_ret - monthly_fee) + monthly_amount * (1 - TX_COST_PCT)
+                        idx_values.append(pv_idx)
+
+                    basket_ret_monthly = (1 + base_ret * avg_beta) ** (1/12) - 1
+                    basket_values = []
+                    pv_basket = 0
+                    for m in range(months_proj):
+                        pv_basket = pv_basket * (1 + basket_ret_monthly - monthly_fee) + monthly_amount * (1 - TX_COST_PCT)
+                        basket_values.append(pv_basket)
+
+                    fig_cmp = go.Figure()
+                    fig_cmp.add_trace(go.Scatter(
+                        x=list(range(1, months_proj + 1)),
+                        y=basket_values, mode="lines",
+                        name=f"Basket ({avg_beta:.2f} β)",
+                        line=dict(color="#c96442", width=2.5)
+                    ))
+                    fig_cmp.add_trace(go.Scatter(
+                        x=list(range(1, months_proj + 1)),
+                        y=idx_values, mode="lines",
+                        name="KSE 100 (β=1.0)",
+                        line=dict(color="gray", width=2, dash="dash")
+                    ))
+
+                    fig_cmp.update_layout(
+                        xaxis_title="Months", yaxis_title="Portfolio value",
+                        height=350, hovermode="x unified",
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                        margin=dict(l=10, r=10, t=10, b=10),
+                    )
+                    st.plotly_chart(fig_cmp, use_container_width=True)
+
+                    cmp1, cmp2, cmp3, cmp4 = st.columns(4)
+                    with cmp1:
+                        st.metric("Basket terminal", fmt_pkr(basket_values[-1]))
+                    with cmp2:
+                        st.metric("Index terminal", fmt_pkr(idx_values[-1]))
+                    with cmp3:
+                        diff_pct = (basket_values[-1] / idx_values[-1] - 1) * 100
+                        st.metric("Difference", f"{diff_pct:+.0f}%",
+                                  delta_color="inverse" if diff_pct < 0 else "normal")
+                    with cmp4:
+                        st.metric("Basket drawdown", f"{avg_dd:.0%}",
+                                  delta=f"{avg_dd - 0.33:+.0%} vs index",
+                                  delta_color="inverse")
+
+                    st.info(
+                        f"**Key insight:** The basket has a {'higher' if avg_div > 0.065 else 'lower'} "
+                        f"dividend yield ({avg_div:.1%}) and {'lower' if avg_pe < 7.5 else 'higher'} "
+                        f"P/E ({avg_pe:.1f}) than the index, but a "
+                        f"{'deeper' if avg_dd > 0.33 else 'shallower'} drawdown ({avg_dd:.0%} vs ~33%). "
+                        f"This is the concentration risk tradeoff — you get more income and cheaper "
+                        f"valuation, but you take more drawdown risk."
+                    )
+                except Exception as e:
+                    st.warning(f"Comparison chart unavailable: {e}")
+                                    # ── Diversification Curve ───────────────────────────────
+                st.divider()
+                st.markdown("**Diversification benefit**")
+                st.caption("How portfolio volatility falls as you add more stocks. "
+                           "Most of the benefit comes from the first 8–12 stocks.")
+
+                try:
+                    fd = load_frontier_data()
+                    if fd is not None:
+                        dc = fd["div_curve"]
+
+                        fig_div = go.Figure()
+
+                        # P10-P90 band
+                        fig_div.add_trace(go.Scatter(
+                            x=dc["n_stocks"], y=dc["p90_volatility"],
+                            mode="lines", line=dict(width=0), showlegend=False,
+                            hoverinfo="skip"
+                        ))
+                        fig_div.add_trace(go.Scatter(
+                            x=dc["n_stocks"], y=dc["p10_volatility"],
+                            mode="lines", line=dict(width=0), fill="tonexty",
+                            fillcolor="rgba(201, 100, 66, 0.12)",
+                            name="P10–P90 range", hoverinfo="skip"
+                        ))
+
+                        # Average volatility
+                        fig_div.add_trace(go.Scatter(
+                            x=dc["n_stocks"], y=dc["avg_volatility"],
+                            mode="lines+markers",
+                            line=dict(color="#c96442", width=2.5),
+                            marker=dict(size=6),
+                            name="Average volatility",
+                            hovertemplate="%{x} stocks: %{y:.1%} volatility<extra></extra>"
+                        ))
+
+                        fig_div.update_layout(
+                            xaxis_title="Number of stocks in portfolio",
+                            yaxis_title="Annualized volatility",
+                            height=350, hovermode="x unified",
+                            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                            margin=dict(l=10, r=10, t=10, b=10),
+                        )
+                        st.plotly_chart(fig_div, use_container_width=True)
+
+                        st.info(
+                            f"**Key insight:** A single stock has an average volatility of "
+                            f"{dc['avg_volatility'].iloc[0]:.1%}. With 10 stocks, that drops "
+                            f"to {dc[dc['n_stocks']==10]['avg_volatility'].iloc[0]:.1%}. "
+                            f"Adding more stocks beyond 12–15 provides diminishing returns — "
+                            f"the curve flattens."
+                        )
+                except Exception as e:
+                    st.warning(f"Diversification curve unavailable: {e}")
+
+                # ── Efficient Frontier ───────────────────────────────────
+                st.divider()
+                st.markdown("**Efficient frontier (Markowitz)**")
+                st.caption("The theoretical risk-return tradeoff. Each point on the curve "
+                           "is the minimum-variance portfolio for that expected return. "
+                           "**Caveat:** based on historical covariance — subject to estimation error.")
+
+                try:
+                    if fd is not None:
+                        fr = fd["frontier"]
+                        ss = fr["stock_stats"]
+                        ew = fr["equal_weight"]
+                        mv = fr["min_var"]
+
+                        fig_front = go.Figure()
+
+                        # Frontier curve — only the efficient part (above min variance)
+                        frontier_df = fr["frontier"]
+                        min_var_return = fr["min_var"]["return"]
+                        efficient = frontier_df[frontier_df["return"] >= min_var_return].sort_values("volatility")
+
+                        fig_front.add_trace(go.Scatter(
+                            x=efficient["volatility"],
+                            y=efficient["return"],
+                            mode="lines",
+                            line=dict(color="#c96442", width=2.5),
+                            name="Efficient frontier",
+                            hovertemplate="Vol: %{x:.1%}<br>Return: %{y:.1%}<extra></extra>"
+                        ))
+
+                        # Individual stocks
+                        fig_front.add_trace(go.Scatter(
+                            x=ss["volatility"], y=ss["return"],
+                            mode="markers",
+                            marker=dict(size=8, color="#8a8580", opacity=0.7),
+                            name="Individual stocks",
+                            text=ss["ticker"],
+                            hovertemplate="%{text}<br>Vol: %{x:.1%}<br>Return: %{y:.1%}<extra></extra>"
+                        ))
+
+                        # Equal-weight portfolio
+                        fig_front.add_trace(go.Scatter(
+                            x=[ew["volatility"]], y=[ew["return"]],
+                            mode="markers",
+                            marker=dict(size=14, color="#5a7a4a", symbol="star",
+                                        line=dict(color="white", width=1)),
+                            name="Equal-weight (all stocks)",
+                            hovertemplate="Equal-weight<br>Vol: %{x:.1%}<br>Return: %{y:.1%}<extra></extra>"
+                        ))
+
+                        # Minimum variance portfolio
+                        fig_front.add_trace(go.Scatter(
+                            x=[mv["volatility"]], y=[mv["return"]],
+                            mode="markers",
+                            marker=dict(size=12, color="#3f6fb5", symbol="diamond",
+                                        line=dict(color="white", width=1)),
+                            name="Minimum variance",
+                            hovertemplate="Min variance<br>Vol: %{x:.1%}<br>Return: %{y:.1%}<extra></extra>"
+                        ))
+
+                        # User's selected basket
+                        from kse.frontier import compute_portfolio_stats
+                        basket_stats = compute_portfolio_stats(fd["returns"], weights_basket)
+                        if basket_stats:
+                            fig_front.add_trace(go.Scatter(
+                                x=[basket_stats["volatility"]],
+                                y=[basket_stats["return"]],
+                                mode="markers",
+                                marker=dict(size=14, color="#c96442", symbol="circle",
+                                            line=dict(color="white", width=2)),
+                                name="Your basket",
+                                hovertemplate="Your basket<br>Vol: %{x:.1%}<br>Return: %{y:.1%}<extra></extra>"
+                            ))
+
+                        fig_front.update_layout(
+                            xaxis_title="Annualized volatility (risk)",
+                            yaxis_title="Annualized expected return",
+                            height=400, hovermode="closest",
+                            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                            margin=dict(l=10, r=10, t=10, b=10),
+                        )
+                        st.plotly_chart(fig_front, use_container_width=True)
+
+                        st.warning(
+                            "**Methodological caveat:** This frontier is based on historical "
+                            "covariance with ~60 monthly observations for 30 stocks. The sample "
+                            "covariance matrix is poorly estimated, making the 'optimal' portfolio "
+                            "unstable. In practice, equal-weight portfolios often outform "
+                            "optimized portfolios out-of-sample. Use this as an educational tool, "
+                            "not as investment advice."
+                        )
+                except Exception as e:
+                    st.warning(f"Efficient frontier unavailable: {e}")
+
+        except Exception as e:
+            st.error(f"Basket tab error: {e}")
+            st.write("This usually means `stock_metrics.csv` is missing or has an issue.")
+            st.write("Run: `python scripts/fetch_stocks.py` to regenerate the data.")
+
+
+st.space("large")
+st.caption(
         f"KSE 100 Portfolio Builder · historical data {DATA_START:%b %Y} – {DATA_END:%b %Y} (Investing.com), "
         f"{ANNUAL_DIVIDEND_YIELD:.0%} dividend yield, {ANNUAL_FEE:.1%} fee · {tier} tier · {scenario} scenario · "
         "Not investment advice."

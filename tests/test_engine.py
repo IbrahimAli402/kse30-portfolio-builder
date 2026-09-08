@@ -22,7 +22,7 @@ def test_load_monthly_returns():
     returns = load_monthly_returns()
     assert len(returns) == 179, f"Expected 179, got {len(returns)}"
     assert not np.any(np.isnan(returns)), "NaN in returns"
-
+    
 
 def test_sip_reproduces_aggressive():
     """SIP on Aggressive tier returns should match sip_aggressive.csv."""

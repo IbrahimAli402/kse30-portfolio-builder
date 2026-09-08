@@ -1,0 +1,61 @@
+# Data source registry for KSE 100 Portfolio Builder Phase 2
+# Every data source is documented here so it's easy to update when
+# a source changes or a better source becomes available.
+
+macro_sources:
+  pkr_usd:
+    type: yfinance
+    ticker: "USDPKR=X"
+    url: "https://finance.yahoo.com/quote/USDPKR=X"
+    description: "PKR/USD exchange rate from Yahoo Finance"
+
+  sbp_policy_rate:
+    type: manual
+    url: "https://www.sbp.org.pk/monetary/index.htm"
+    description: "SBP policy (discount) rate — enter from SBP Monetary Policy Statement"
+
+  cpi:
+    type: manual
+    url: "https://www.pbs.gov.pk/content/consumer-price-index-cpi"
+    description: "CPI inflation (year-on-year) — enter from PBS monthly release"
+
+  sbp_reserves:
+    type: manual
+    url: "https://www.sbp.org.pk/ecodata/foreign-act.pdf"
+    description: "SBP foreign exchange reserves (months of imports)"
+
+  imf_status:
+    type: manual
+    url: "https://www.imf.org/en/Countries/PAK"
+    description: "IMF programme status (EFF, SBA, etc.)"
+
+  kse100_pe:
+    type: manual
+    url: "https://www.psx.com.pk/market-info"
+    description: "KSE 100 trailing P/E ratio"
+
+  kse100_dividend_yield:
+    type: manual
+    url: "https://www.psx.com.pk/market-info"
+    description: "KSE 100 dividend yield"
+
+stock_sources:
+  kse30_constituents:
+    type: manual
+    url: "https://www.psx.com.pk/index-details/PSX"
+    description: "KSE 30 constituent list — fetch from PSX or update manually"
+
+  stock_prices:
+    type: yfinance
+    suffix: ".KA"
+    description: "Daily stock prices from Yahoo Finance (PSX stocks use .KA suffix)"
+
+  stock_dividends:
+    type: yfinance
+    suffix: ".KA"
+    description: "Dividend history from Yahoo Finance (may be incomplete)"
+
+  stock_financials:
+    type: manual
+    url: "https://dps.psx.com.pk/"
+    description: "Standardized financial statements from PSX Data Portal"

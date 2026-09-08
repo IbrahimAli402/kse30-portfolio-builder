@@ -1,0 +1,103 @@
+# KSE 100 Portfolio Builder — Phase 2 Scenario Config
+#
+# This file defines the STRUCTURE of the scenarios and the FORECAST
+# assumptions. The OBSERVED values (dividend yield, inflation, current
+# P/E, exchange rate) come from data/processed/macro_snapshot.csv,
+# which is fetched by scripts/fetch_macro.py.
+#
+# When macro data changes, expected returns are recalculated automatically
+# by kse/blocks.py (built in Part 2).
+
+# ── Building block identity ────────────────────────────────────────────
+# Expected return = dividend_yield + real_earnings_growth + inflation
+#                    + valuation_change
+#
+# For Bull and Base: standard identity works.
+# For Bear: nominal_earnings_growth used directly (identity breaks in crisis).
+#
+# Components marked "from_macro" are read from macro_snapshot.csv at runtime.
+# Components with numeric values are forecast assumptions in this file.
+
+building_blocks:
+  Bull:
+    dividend_yield: from_macro
+    real_earnings_growth: 0.040
+    inflation: from_macro
+    pe_start: from_macro
+    pe_end: 11.0
+    horizon_years: 10
+
+  Base:
+    dividend_yield: from_macro
+    real_earnings_growth: 0.030
+    inflation: from_macro
+    pe_start: from_macro
+    pe_end: flat
+    horizon_years: 10
+
+  Bear:
+    dividend_yield: from_macro
+    nominal_earnings_growth: 0.030
+    pe_start: from_macro
+    pe_end: 3.8
+    horizon_years: 10
+    use_nominal_growth: true
+
+# ── Scenario assumptions ───────────────────────────────────────────────
+# These are FORECAST assumptions, not observed data.
+# The income_return is CALCULATED from policy_rate in kse/blocks.py
+# (income_return = policy_rate - 0.01, approximating money market fund returns).
+
+scenarios:
+  Bull:
+    weight: 0.25
+    policy_rate: 0.09
+    depreciation: 0.04
+    gdp_growth: 0.045
+    narrative: >
+      IMF programme completed and exited into market access.
+      Primary surplus holds. Privatisations and Reko Diq proceed.
+      Foreign portfolio flows return.
+
+  Base:
+    weight: 0.50
+    policy_rate: 0.11
+    depreciation: 0.06
+    gdp_growth: 0.035
+    narrative: >
+      Programme anchored muddle through. Reforms partial.
+      Growth adequate but not transformational. Periodic political
+      noise without a balance of payments break.
+
+  Bear:
+    weight: 0.25
+    policy_rate: 0.175
+    depreciation: 0.135
+    gdp_growth: 0.015
+    narrative: >
+      Programme derailment or balance of payments shock.
+      Return to import compression. Domestic debt reprofiling scare.
+
+# ── Model parameters (constants, not financial data) ───────────────────
+
+model:
+  annual_fee: 0.015
+  tx_cost_pct: 0.002
+  cgt_short: 0.15
+  cgt_medium: 0.125
+  cgt_long: 0.0
+  num_paths: 5000
+  horizon_months: 120
+  block_length: 8
+  seed: 42
+
+tiers:
+  Conservative:
+    equity: 0.60
+    income: 0.40
+  Moderate:
+    equity: 0.80
+    income: 0.20
+  Aggressive:
+    equity: 1.00
+    income: 0.00

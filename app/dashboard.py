@@ -18,6 +18,16 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+# ── Phase 2 imports ────────────────────────────────────────────────────
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from kse.monte_carlo import run_monte_carlo, compute_percentiles, compute_probability_table
+from kse.scenarios import get_all_scenarios, DEFAULT_WEIGHTS, blend_scenarios
+from kse.blocks import expected_return, calculate_all_expected_returns
+from kse.screen import screen_all
+from kse.data_pipeline import load_stock_metrics, load_kse30_constituents, check_data_freshness
 
 # ---------------------------------------------------------------------------
 # Page
@@ -56,6 +66,15 @@ HOLDING_PERIODS = [
     (1, "1 mo"), (3, "3 mo"), (6, "6 mo"), (12, "1 yr"), (24, "2 yr"),
     (36, "3 yr"), (48, "4 yr"), (60, "5 yr"), (84, "7 yr"), (120, "10 yr"),
 ]
+# ── Phase 2 constants ──────────────────────────────────────────────────
+WEIGHT_PRESETS = {
+    "Default (25/50/25)": {"Bull": 0.25, "Base": 0.50, "Bear": 0.25},
+    "Equal (33/33/33)": {"Bull": 0.333, "Base": 0.333, "Bear": 0.333},
+    "Optimistic (40/40/20)": {"Bull": 0.40, "Base": 0.40, "Bear": 0.20},
+    "Pessimistic (15/45/40)": {"Bull": 0.15, "Base": 0.45, "Bear": 0.40},
+}
+
+PKR_USD = 280  # Starting exchange rate for USD toggle
 
 # ---------------------------------------------------------------------------
 # Design tokens (DESIGN.md) — chart-side mirror of config.toml
@@ -140,6 +159,14 @@ def load_data():
 
 
 TR, RETS, RISK = load_data()
+@st.cache_data(show_spinner=False, ttl=300)
+def run_monte_carlo_cached(weights_tuple, tier, monthly_amount, horizon_months, method, seed=42):
+    """Run Monte Carlo simulation (cached for performance)."""
+    weights = {"Bull": weights_tuple[0], "Base": weights_tuple[1], "Bear": weights_tuple[2]}
+    return run_monte_carlo(
+        weights=weights, tier=tier, monthly_amount=monthly_amount,
+        horizon=horizon_months, method=method, seed=seed, num_paths=5000
+    )
 DATA_START, DATA_END = RETS.index[0], RETS.index[-1]
 
 
@@ -493,7 +520,9 @@ with page:
     st.divider()
 
     # ---- Tabs --------------------------------------------------------------
-    tab_growth, tab_div, tab_risk, tab_worst = st.tabs(["Growth", "Dividends", "Risk", "Worst case"])
+    tab_growth, tab_div, tab_risk, tab_worst, tab_outlook, tab_basket = st.tabs(
+        ["Growth", "Dividends", "Risk", "Worst case", "Outlook", "Basket"]
+    )
 
     with tab_growth:
         VIEWS = {"Projection": "Projection", "Scenarios": "Compare scenarios", "Backtest": f"{DATA_START:%Y}–{DATA_END:%Y} backtest"}
@@ -651,6 +680,290 @@ with page:
             wt[c] = wt[c].map(fmt_pkr)
         wt.columns = ["Month", "Portfolio value", "Invested", "Profit", "Underwater"]
         table_view(wt)
+
+    with tab_outlook:
+        st.subheader("Outlook 2026–2035")
+        st.caption("A probabilistic ten-year projection. 5,000 simulated paths, "
+                   "blended by scenario weight. Not a point forecast — a distribution.")
+
+        # ── Controls ──────────────────────────────────────────────────────
+        oc1, oc2, oc3, oc4 = st.columns([2, 1, 1, 1], gap="medium")
+
+        with oc1:
+            preset = st.select_slider(
+                "Scenario weights", list(WEIGHT_PRESETS),
+                value="Default (25/50/25)",
+                help="Bull/Base/Bear probability weights"
+            )
+            weights = WEIGHT_PRESETS[preset]
+            st.caption(f"Bull {weights['Bull']:.0%} · Base {weights['Base']:.0%} · Bear {weights['Bear']:.0%}")
+
+        with oc2:
+            view_mode = st.segmented_control(
+                "View", ["Nominal", "Real"], default="Nominal", required=True
+            )
+
+        with oc3:
+            currency = st.segmented_control(
+                "Currency", ["PKR", "USD"], default="PKR", required=True
+            )
+
+        with oc4:
+            method = st.segmented_control(
+                "Method", ["Bootstrap", "Regime", "GARCH"],
+                default="Bootstrap", required=True
+            )
+
+        horizon_outlook = st.slider(
+            "Outlook horizon (years)", 5, 20, 10,
+            help="Longer horizons have wider uncertainty bands"
+        )
+        horizon_months = horizon_outlook * 12
+
+        # ── Run Monte Carlo ───────────────────────────────────────────────
+        weights_tuple = (weights["Bull"], weights["Base"], weights["Bear"])
+        mc_result = run_monte_carlo_cached(
+            weights_tuple, tier, monthly_amount, horizon_months,
+            method.lower(), seed=42
+        )
+
+        # ── Adjust for real/USD ───────────────────────────────────────────
+        blended = blend_scenarios(weights)
+        inflation = blended["inflation"]
+        depreciation = blended["depreciation"]
+
+        def fmt_money(v, decimals=2):
+            """Format value with the selected currency label."""
+            prefix = "USD" if currency == "USD" else "PKR"
+            v = float(v)
+            sign = "-" if v < 0 else ""
+            a = abs(v)
+
+            if currency == "USD":
+                # Western conventions: K for thousands, M for millions
+                if a >= 1e6:
+                    return f"{sign}{prefix} {_trim(a / 1e6, decimals)}M"
+                if a >= 1e3:
+                    return f"{sign}{prefix} {_trim(a / 1e3, decimals)}K"
+                return f"{sign}{prefix} {a:,.0f}"
+            else:
+                # South Asian conventions: Lac, Cr
+                if a >= 1e7:
+                    return f"{sign}{prefix} {_trim(a / 1e7, decimals)} Cr"
+                if a >= 1e5:
+                    return f"{sign}{prefix} {_trim(a / 1e5, decimals)} Lac"
+                return f"{sign}{prefix} {a:,.0f}"
+
+        def adjust_value(val, month):
+            """Adjust value for real/USD view."""
+            year = month / 12
+            adjusted = val
+            if view_mode == "Real":
+                adjusted = val / (1 + inflation) ** year
+            if currency == "USD":
+                adjusted = adjusted / PKR_USD
+            return adjusted
+
+        # ── KPI Row ───────────────────────────────────────────────────────
+        p = mc_result["percentiles"]
+        pt = mc_result["probability_table"]
+        total_invested = mc_result["total_invested"]
+
+        kpi_p50 = adjust_value(p["p50"][-1], horizon_months - 1)
+        kpi_p10 = adjust_value(p["p10"][-1], horizon_months - 1)
+        kpi_p90 = adjust_value(p["p90"][-1], horizon_months - 1)
+        kpi_invested = adjust_value(total_invested, horizon_months - 1)
+
+        k1, k2, k3, k4 = st.columns(4)
+        with k1:
+            st.metric("Median (P50)", fmt_money(kpi_p50), help="Most likely outcome")
+        with k2:
+            st.metric("Worst case (P10)", fmt_money(kpi_p10),
+                      delta=f"{(kpi_p10/kpi_invested - 1)*100:.0f}% vs deposits",
+                      delta_color="inverse")
+        with k3:
+            st.metric("Best case (P90)", fmt_money(kpi_p90),
+                      delta=f"{(kpi_p90/kpi_invested - 1)*100:.0f}% vs deposits")
+        with k4:
+            loss_color = "inverse" if pt["below_deposits"] > 0.2 else "off"
+            st.metric("Chance of loss", f"{pt['below_deposits']:.0%}",
+                      help="Probability of finishing below total deposits")
+
+        st.divider()
+
+        # ── Fan Chart ─────────────────────────────────────────────────────
+        st.markdown("**Portfolio value distribution over time**")
+        st.caption(f"{mc_result['portfolio_paths'].shape[0]:,} simulated paths · "
+                   f"{method} method · {view_mode} {currency}")
+
+        months = np.arange(horizon_months)
+        deposits = monthly_amount * (months + 1)
+
+        adj_p10 = np.array([adjust_value(p["p10"][m], m) for m in months])
+        adj_p25 = np.array([adjust_value(p["p25"][m], m) for m in months])
+        adj_p50 = np.array([adjust_value(p["p50"][m], m) for m in months])
+        adj_p75 = np.array([adjust_value(p["p75"][m], m) for m in months])
+        adj_p90 = np.array([adjust_value(p["p90"][m], m) for m in months])
+        adj_dep = np.array([adjust_value(deposits[m], m) for m in months])
+
+        fig_fan = go.Figure()
+
+        fig_fan.add_trace(go.Scatter(
+            x=months / 12, y=adj_p90, mode="lines",
+            line=dict(width=0), showlegend=False, hoverinfo="skip"
+        ))
+        fig_fan.add_trace(go.Scatter(
+            x=months / 12, y=adj_p10, mode="lines",
+            line=dict(width=0), fill="tonexty",
+            fillcolor="rgba(201, 100, 66, 0.1)",
+            name="P10–P90 (80% of outcomes)"
+        ))
+
+        fig_fan.add_trace(go.Scatter(
+            x=months / 12, y=adj_p75, mode="lines",
+            line=dict(width=0), showlegend=False, hoverinfo="skip"
+        ))
+        fig_fan.add_trace(go.Scatter(
+            x=months / 12, y=adj_p25, mode="lines",
+            line=dict(width=0), fill="tonexty",
+            fillcolor="rgba(201, 100, 66, 0.2)",
+            name="P25–P75 (50% of outcomes)"
+        ))
+
+        fig_fan.add_trace(go.Scatter(
+            x=months / 12, y=adj_p50, mode="lines",
+            line=dict(color="#c96442", width=2.5),
+            name="Median (P50)"
+        ))
+
+        fig_fan.add_trace(go.Scatter(
+            x=months / 12, y=adj_dep, mode="lines",
+            line=dict(color="gray", width=1.5, dash="dash"),
+            name="Cumulative deposits"
+        ))
+
+        y_title = "Portfolio value" if currency == "PKR" else "Portfolio value (USD)"
+        fig_fan.update_layout(
+            xaxis_title="Years from start",
+            yaxis_title=y_title,
+            hovermode="x unified",
+            height=400,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+            margin=dict(l=10, r=10, t=10, b=10),
+        )
+        st.plotly_chart(fig_fan, use_container_width=True)
+
+        st.info(
+            f"**Key insight:** Over {horizon_outlook} years, the median outcome is "
+            f"{fmt_money(kpi_p50)} on {fmt_money(kpi_invested)} invested. But the range "
+            f"is wide: there's a 10% chance of finishing below {fmt_money(kpi_p10)} "
+            f"and a 10% chance of exceeding {fmt_money(kpi_p90)}. "
+            + ("These are real (inflation-adjusted) values — the nominal headline is higher."
+               if view_mode == "Real" else
+               "Switch to **Real** view to see inflation-adjusted purchasing power.")
+        )
+
+        st.divider()
+
+        # ── Terminal Wealth Histogram ─────────────────────────────────────
+        st.markdown("**Terminal wealth distribution**")
+        st.caption("Final portfolio value across all simulated paths. "
+                   "Vertical lines mark P10, P50 and P90.")
+
+        terminal_adjusted = np.array([
+            adjust_value(v, horizon_months - 1)
+            for v in mc_result["terminal_values"]
+        ])
+
+        fig_hist = go.Figure()
+        fig_hist.add_trace(go.Histogram(
+            x=terminal_adjusted, nbinsx=40,
+            marker_color="#c96442", opacity=0.7,
+            name="Terminal wealth"
+        ))
+
+        for i, (label, val, color) in enumerate([
+            ("P10", kpi_p10, "#b85c4a"),
+            ("P50", kpi_p50, "#c96442"),
+            ("P90", kpi_p90, "#5a7a4a"),
+        ]):
+            # alternate top/bottom so labels don't overlap when percentiles are close
+            pos = "top" if i % 2 == 0 else "bottom"
+            fig_hist.add_vline(
+                x=val, line_dash="dash", line_color=color,
+                annotation_text=f"{label}: {fmt_money(val)}",
+                annotation_position=pos
+            )
+
+        fig_hist.update_layout(
+            xaxis_title=y_title, yaxis_title="Number of paths",
+            height=300, showlegend=False,
+            margin=dict(l=10, r=10, t=30, b=10),
+        )
+        st.plotly_chart(fig_hist, use_container_width=True)
+
+        st.divider()
+
+        # ── Probability Table ─────────────────────────────────────────────
+        st.markdown("**Probability table**")
+        st.caption("Honest probabilities, not point forecasts. "
+                   "These update live with your inputs.")
+
+        prob_data = [
+            {"Outcome": "Finish above 1.5× deposits",
+             "Probability": f"{pt['above_1.5x_deposits']:.0%}"},
+            {"Outcome": "Finish above 2× deposits",
+             "Probability": f"{pt['above_2x_deposits']:.0%}"},
+            {"Outcome": "Finish above deposits (break even)",
+             "Probability": f"{pt['above_deposits']:.0%}"},
+            {"Outcome": "Finish below deposits (loss)",
+             "Probability": f"{pt['below_deposits']:.0%}"},
+            {"Outcome": "30%+ drawdown along the way",
+             "Probability": f"{pt['drawdown_30pct']:.0%}"},
+            {"Outcome": "50%+ drawdown along the way",
+             "Probability": f"{pt['drawdown_50pct']:.0%}"},
+        ]
+        st.dataframe(pd.DataFrame(prob_data), use_container_width=True, hide_index=True)
+
+        st.info(
+            f"**What this means:** A {pt['above_deposits']:.0%} chance of breaking even "
+            f"is not a guarantee — it means that across {mc_result['portfolio_paths'].shape[0]:,} "
+            f"plausible futures, that fraction ended above deposits. The "
+            f"{pt['drawdown_30pct']:.0%} chance of a 30%+ drawdown is the number to "
+            f"prepare for psychologically: it doesn't mean you'll lose money, but it "
+            f"means you'll see your portfolio fall by a third and have to keep buying."
+        )
+
+        # ── Building Block Table (expandable) ─────────────────────────────
+        with st.expander("Where do the expected returns come from?"):
+            st.caption("Building block identity: expected return = dividend yield + "
+                       "real earnings growth + inflation + valuation change")
+
+            bb_data = []
+            from kse.blocks import calculate_all_expected_returns
+            results = calculate_all_expected_returns()
+            for scenario_name in ["Bull", "Base", "Bear"]:
+                ret = results[scenario_name]["expected_return"]
+                val_change = results[scenario_name]["valuation_change"]
+                components = results[scenario_name]["components"]
+
+                if "nominal_earnings_growth" in components:
+                    growth_label = f"{components['nominal_earnings_growth']:.1%} (nominal)"
+                else:
+                    growth_label = f"{components['real_earnings_growth']:.1%} (real)"
+
+                bb_data.append({
+                    "Scenario": scenario_name,
+                    "Div yield": f"{components['dividend_yield']:.1%}",
+                    "Earnings growth": growth_label,
+                    "Inflation": f"{components['inflation']:.1%}",
+                    "Valuation Δ": f"{val_change:+.1%}",
+                    "Expected return": f"{ret:.1%}",
+                })
+
+            st.dataframe(pd.DataFrame(bb_data), use_container_width=True, hide_index=True)
+            st.caption("Bear case uses nominal earnings growth directly because the "
+                       "standard identity (real growth + inflation) breaks down in crisis.")
 
     st.space("large")
     st.caption(

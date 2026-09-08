@@ -1,0 +1,97 @@
+# KSE 30 constituent list — FALLBACK
+# This is used when the PSX website fetch fails.
+# Update this list when PSX rebalances the KSE 30.
+# Last updated: 2026-09-09
+# Source: https://www.psx.com.pk/index-details/PSX
+
+constituents:
+  - ticker: MEBL
+    name: Meezan Bank Limited
+    sector: Commercial Banks
+  - ticker: HBL
+    name: Habib Bank Limited
+    sector: Commercial Banks
+  - ticker: UBL
+    name: United Bank Limited
+    sector: Commercial Banks
+  - ticker: MCB
+    name: MCB Bank Limited
+    sector: Commercial Banks
+  - ticker: BAFL
+    name: Bank Alfalah Limited
+    sector: Commercial Banks
+  - ticker: OGDC
+    name: Oil and Gas Development Company
+    sector: Oil and Gas Exploration
+  - ticker: PPL
+    name: Pakistan Petroleum Limited
+    sector: Oil and Gas Exploration
+  - ticker: MARI
+    name: Mari Petroleum
+    sector: Oil and Gas Exploration
+  - ticker: POL
+    name: Pakistan Oilfields Limited
+    sector: Oil and Gas Exploration
+  - ticker: FFC
+    name: Fauji Fertilizer Company
+    sector: Fertilizer
+  - ticker: EFERT
+    name: Engro Fertilizers
+    sector: Fertilizer
+  - ticker: FATIMA
+    name: Fatima Fertilizer
+    sector: Fertilizer
+  - ticker: LUCK
+    name: Lucky Cement
+    sector: Cement
+  - ticker: MLCF
+    name: Maple Leaf Cement
+    sector: Cement
+  - ticker: FCCL
+    name: Fauji Cement
+    sector: Cement
+  - ticker: DGKC
+    name: D.G. Khan Cement
+    sector: Cement
+  - ticker: KOHC
+    name: Kohat Cement
+    sector: Cement
+  - ticker: HUBC
+    name: Hub Power Company
+    sector: Power Generation
+  - ticker: KAPCO
+    name: Kot Addu Power
+    sector: Power Generation
+  - ticker: PSO
+    name: Pakistan State Oil
+    sector: Oil and Gas Marketing
+  - ticker: APL
+    name: Attock Petroleum
+    sector: Oil and Gas Marketing
+  - ticker: SYS
+    name: Systems Limited
+    sector: Technology
+  - ticker: TRG
+    name: TRG Pakistan
+    sector: Technology
+  - ticker: AVN
+    name: Avanceon
+    sector: Technology
+  - ticker: INDU
+    name: Indus Motor Company
+    sector: Automobile
+  - ticker: MTL
+    name: Millat Tractors
+    sector: Automobile
+  - ticker: NESTLE
+    name: Nestle Pakistan
+    sector: Food and Personal Care
+  - ticker: PKGS
+    name: Packages Limited
+    sector: Paper and Board
+  - ticker: EPCL
+    name: Engro Polymer
+    sector: Chemicals
+  - ticker: LOTCHEM
+    name: Lotte Chemical
+    sector: Chemicals

@@ -7,9 +7,9 @@ Identity: Expected return = dividend_yield + real_earnings_growth
 For Bull and Base: standard identity works.
 For Bear: nominal_earnings_growth used directly (identity breaks in crisis).
 
-Observed values (dividend_yield, inflation, current P/E) are read
-dynamically from data/processed/macro_snapshot.csv.
-Forecast assumptions (real_earnings_growth, ending P/E) come from
+Observed values (dividend_yield, current P/E) are read dynamically from
+data/processed/macro_snapshot.csv.
+Forecast assumptions (real_earnings_growth, inflation, ending P/E) come from
 config/scenarios.yaml.
 """
 
@@ -24,13 +24,14 @@ with open(CONFIG_PATH) as f:
     CONFIG = yaml.safe_load(f)
 
 BUILDING_BLOCKS = CONFIG["building_blocks"]
+SCENARIOS_CFG = CONFIG["scenarios"]
 
 
 def get_macro_values():
     """
     Load observed macro values from the data pipeline.
 
-    Returns a dict with keys: dividend_yield, inflation, kse100_pe
+    Returns a dict with keys: dividend_yield, kse100_pe
     """
     from kse.data_pipeline import load_macro_snapshot
 
@@ -42,7 +43,6 @@ def get_macro_values():
 
     return {
         "dividend_yield": get_value("kse100_dividend_yield"),
-        "inflation": get_value("cpi"),
         "kse100_pe": get_value("kse100_pe"),
     }
 
@@ -81,10 +81,12 @@ def expected_return(scenario, macro_values=None):
 
     # Get observed values from macro data
     dividend_yield = macro_values["dividend_yield"]
-    inflation = macro_values["inflation"]
     pe_start = macro_values["kse100_pe"]
     pe_end = bb["pe_end"]
     horizon = bb["horizon_years"]
+
+    # Get forecast inflation from scenario config
+    inflation = SCENARIOS_CFG[scenario]["inflation"]
 
     # Calculate valuation change
     val_change = valuation_change_annualized(pe_start, pe_end, horizon)
@@ -150,7 +152,6 @@ def print_building_block_table():
     print("=" * 80)
     print("BUILDING BLOCK EXPECTED RETURNS (DYNAMIC)")
     print(f"  Macro data as of: {macro['dividend_yield']:.1%} div yield, "
-          f"{macro['inflation']:.1%} inflation, "
           f"{macro['kse100_pe']:.1f}x P/E")
     print("=" * 80)
     print(f"{'Component':<25} {'Bull':>10} {'Base':>10} {'Bear':>10}")
@@ -161,24 +162,16 @@ def print_building_block_table():
     print(f"{'dividend_yield':<25} {div_y:>10.1%} {div_y:>10.1%} {div_y:>10.1%}")
 
     # Earnings growth
-    for scenario in ["Bull", "Base", "Bear"]:
-        bb = BUILDING_BLOCKS[scenario]
-        if bb.get("use_nominal_growth", False):
-            growth = bb["nominal_earnings_growth"]
-            label = "nominal_earnings_growth"
-        else:
-            growth = bb["real_earnings_growth"]
-            label = "real_earnings_growth"
-
-    # Print growth row
     bull_g = BUILDING_BLOCKS["Bull"].get("real_earnings_growth", 0)
     base_g = BUILDING_BLOCKS["Base"].get("real_earnings_growth", 0)
     bear_g = BUILDING_BLOCKS["Bear"].get("nominal_earnings_growth", 0)
     print(f"{'earnings_growth':<25} {bull_g:>10.1%} {base_g:>10.1%} {bear_g:>10.1%}")
 
     # Inflation
-    infl = macro["inflation"]
-    print(f"{'inflation':<25} {infl:>10.1%} {infl:>10.1%} {'—':>10}")
+    bull_i = SCENARIOS_CFG["Bull"]["inflation"]
+    base_i = SCENARIOS_CFG["Base"]["inflation"]
+    bear_i = SCENARIOS_CFG["Bear"]["inflation"]
+    print(f"{'inflation':<25} {bull_i:>10.1%} {base_i:>10.1%} {'—':>10}")
 
     # Valuation change
     bull_vc = results["Bull"]["valuation_change"]

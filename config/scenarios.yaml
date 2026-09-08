@@ -1,12 +1,12 @@
 # KSE 100 Portfolio Builder — Phase 2 Scenario Config
 #
 # This file defines the STRUCTURE of the scenarios and the FORECAST
-# assumptions. The OBSERVED values (dividend yield, inflation, current
-# P/E, exchange rate) come from data/processed/macro_snapshot.csv,
-# which is fetched by scripts/fetch_macro.py.
+# assumptions. The OBSERVED values (dividend yield, current P/E, exchange rate)
+# come from data/processed/macro_snapshot.csv, which is fetched by
+# scripts/fetch_macro.py.
 #
 # When macro data changes, expected returns are recalculated automatically
-# by kse/blocks.py (built in Part 2).
+# by kse/blocks.py.
 
 # ── Building block identity ────────────────────────────────────────────
 # Expected return = dividend_yield + real_earnings_growth + inflation
@@ -22,7 +22,6 @@ building_blocks:
   Bull:
     dividend_yield: from_macro
     real_earnings_growth: 0.040
-    inflation: from_macro
     pe_start: from_macro
     pe_end: 11.0
     horizon_years: 10
@@ -30,7 +29,6 @@ building_blocks:
   Base:
     dividend_yield: from_macro
     real_earnings_growth: 0.030
-    inflation: from_macro
     pe_start: from_macro
     pe_end: flat
     horizon_years: 10
@@ -45,7 +43,7 @@ building_blocks:
 
 # ── Scenario assumptions ───────────────────────────────────────────────
 # These are FORECAST assumptions, not observed data.
-# The income_return is CALCULATED from policy_rate in kse/blocks.py
+# The income_return is CALCULATED from policy_rate in kse/scenarios.py
 # (income_return = policy_rate - 0.01, approximating money market fund returns).
 
 scenarios:
@@ -54,6 +52,7 @@ scenarios:
     policy_rate: 0.09
     depreciation: 0.04
     gdp_growth: 0.045
+    inflation: 0.055
     narrative: >
       IMF programme completed and exited into market access.
       Primary surplus holds. Privatisations and Reko Diq proceed.
@@ -64,6 +63,7 @@ scenarios:
     policy_rate: 0.11
     depreciation: 0.06
     gdp_growth: 0.035
+    inflation: 0.070
     narrative: >
       Programme anchored muddle through. Reforms partial.
       Growth adequate but not transformational. Periodic political
@@ -74,6 +74,7 @@ scenarios:
     policy_rate: 0.175
     depreciation: 0.135
     gdp_growth: 0.015
+    inflation: 0.135
     narrative: >
       Programme derailment or balance of payments shock.
       Return to import compression. Domestic debt reprofiling scare.

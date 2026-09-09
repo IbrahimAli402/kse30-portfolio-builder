@@ -36,6 +36,7 @@ from kse.reporting import export_portfolio_csv, generate_pdf_report, has_pdf_sup
 from kse.multi_asset import compare_assets, load_gold_data
 from kse.drip import drip_comparison
 from kse.rebalance import analyze_drift, rebalancing_cost
+from kse.mutual_funds import compare_to_mutual_funds, fee_impact_chart
 from kse.risk_metrics import (
     compute_var_cvar,
     stress_test_portfolio,
@@ -2003,6 +2004,110 @@ with page:
                         st.caption("All positions within 5% drift threshold. No rebalancing needed yet.")
                 except Exception as e:
                     st.warning(f"Rebalancing analysis unavailable: {e}")
+                                # ── Mutual Fund Comparison ─────────────────────────────────
+                st.divider()
+                st.markdown("**DIY vs Mutual Funds**")
+                st.caption(
+                    "Why build your own portfolio? The fee difference compounds into "
+                    "a massive wealth gap over time."
+                )
+
+                try:
+                    # Use the basket's expected return if available, else use Base scenario
+                    from kse.blocks import expected_return
+                    try:
+                        diy_return, _, _ = expected_return("Base")
+                    except Exception:
+                        diy_return = SCENARIOS["Base"]["equity_return"]
+
+                    mf = compare_to_mutual_funds(
+                        diy_annual_return=diy_return,
+                        diy_annual_fee=ANNUAL_FEE,
+                        monthly_amount=monthly_amount,
+                        horizon_years=horizon,
+                        tx_cost_pct=TX_COST_PCT,
+                    )
+
+                    # Comparison table
+                    mf_df = mf["comparison_table"].copy()
+                    mf_df["Gross_Return"] = mf_df["Gross_Return"].map("{:.1%}".format)
+                    mf_df["Fee"] = mf_df["Fee"].map("{:.1%}".format)
+                    mf_df["Net_Return"] = mf_df["Net_Return"].map("{:.1%}".format)
+                    mf_df["Terminal_Value"] = mf_df["Terminal_Value"].map(fmt_pkr)
+                    mf_df["Total_Invested"] = mf_df["Total_Invested"].map(fmt_pkr)
+                    mf_df["Profit"] = mf_df["Profit"].map(fmt_pkr)
+                    mf_df["Fee_Paid"] = mf_df["Fee_Paid"].map(fmt_pkr)
+                    mf_df.columns = ["Option", "Gross Return", "Fee", "Net Return",
+                                    "Terminal Value", "Total Invested", "Profit", "Fees Paid"]
+                    st.dataframe(mf_df, use_container_width=True, hide_index=True)
+
+                    # KPI row: DIY vs equity fund
+                    fa = mf["fee_drag_analysis"]
+                    mc1, mc2, mc3, mc4 = st.columns(4)
+                    mc1.metric("Your fee", f"{fa['diy_fee']:.1%}",
+                               delta_color="off", delta_arrow="off")
+                    mc2.metric("Equity fund fee", f"{fa['equity_fund_fee']:.1%}",
+                               delta_color="off", delta_arrow="off")
+                    mc3.metric("Fee difference", f"{fa['fee_difference']:.1%}",
+                               "per year",
+                               delta_color="inverse")
+                    mc4.metric("Wealth gap", fmt_pkr(fa["terminal_difference"], 0),
+                               f"{fa['terminal_difference_pct']:.0%} more DIY",
+                               delta_color="normal")
+
+                    insight(
+                        f"Your DIY portfolio pays {fa['diy_fee']:.1%} in fees vs "
+                        f"{fa['equity_fund_fee']:.1%} for a typical equity fund — a "
+                        f"{fa['fee_difference']:.1%} annual difference. Over {horizon} "
+                        f"years, that compounds to a "
+                        f"{fmt_pkr(fa['terminal_difference'], 0)} wealth gap in your favor. "
+                        f"This is the single best argument for self-directed investing: "
+                        f"you keep the fee difference working for you, not the fund manager."
+                    )
+
+                    # Fee impact chart
+                    st.divider()
+                    st.markdown("**How fees destroy wealth**")
+                    st.caption(f"Same {diy_return:.0%} gross return, different fee levels. "
+                               f"The gap is wealth transferred from you to the fund manager.")
+
+                    fee_df = fee_impact_chart(
+                        monthly_amount=monthly_amount,
+                        horizon_years=horizon,
+                        gross_return=diy_return,
+                    )
+
+                    fig_fee = go.Figure()
+                    fig_fee.add_trace(go.Bar(
+                        x=fee_df["Fee"].map("{:.1%}".format),
+                        y=fee_df["Terminal_Value"],
+                        name="Terminal value",
+                        marker_color=tk["accent"],
+                        text=[fmt_pkr(v, 0) for v in fee_df["Terminal_Value"]],
+                        textposition="outside",
+                        cliponaxis=False,
+                    ))
+                    fig_fee.update_layout(**base_layout(tk, height=350))
+                    fig_fee.update_yaxes(title_text="Terminal portfolio value")
+                    money_axis(fig_fee, fee_df["Terminal_Value"].max() * 1.1)
+                    st.plotly_chart(fig_fee, theme=None, config=PLOTLY_CONFIG,
+                                    key="fee_impact_chart", use_container_width=True)
+
+                    # Wealth destroyed insight
+                    zero_fee = fee_df[fee_df["Fee"] == 0.0].iloc[0]
+                    max_fee = fee_df[fee_df["Fee"] == fee_df["Fee"].max()].iloc[0]
+                    destroyed = zero_fee["Terminal_Value"] - max_fee["Terminal_Value"]
+                    destroyed_pct = destroyed / zero_fee["Terminal_Value"]
+
+                    insight(
+                        f"A 3% annual fee destroys {fmt_pkr(destroyed, 0)} "
+                        f"({destroyed_pct:.0%}) of your wealth over {horizon} years — "
+                        f"money that would have compounded for you is transferred to the "
+                        f"fund manager. Even a 1% fee costs {fmt_pkr(zero_fee['Terminal_Value'] - fee_df[fee_df['Fee']==0.01].iloc[0]['Terminal_Value'], 0)} "
+                        f"vs zero fees. Every basis point matters over long horizons."
+                    )
+                except Exception as e:
+                    st.warning(f"Mutual fund comparison unavailable: {e}")
 
                 # ── Screen scores ──────────────────────────────────────────
                 with st.expander("Stock screen scores (5-pillar)"):

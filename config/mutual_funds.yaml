@@ -1,0 +1,37 @@
+# config/mutual_funds.yaml
+# Pakistani mutual fund category benchmarks.
+# Returns are approximate industry averages based on MUFAP data and
+# historical KSE-100 performance. Fees are typical expense ratios.
+
+categories:
+  equity:
+    label: "Equity Fund (e.g., NBP Funds, UBL Fund Managers)"
+    description: "Actively managed equity funds. Highest return potential, highest risk."
+    annual_return: 0.14
+    annual_fee: 0.022
+    volatility: 0.22
+    max_drawdown: -0.35
+
+  balanced:
+    label: "Balanced Fund (e.g., Arif Habib, Al Meezan)"
+    description: "Mix of equity and debt. Moderate risk, moderate return."
+    annual_return: 0.11
+    annual_fee: 0.018
+    volatility: 0.14
+    max_drawdown: -0.20
+
+  money_market:
+    label: "Money Market Fund (e.g., NBP Savings, UBL Savings)"
+    description: "Short-term debt instruments. Low risk, low return, high liquidity."
+    annual_return: 0.09
+    annual_fee: 0.010
+    volatility: 0.03
+    max_drawdown: -0.02
+
+  islamic_equity:
+    label: "Islamic Equity Fund (Shariah-compliant)"
+    description: "Shariah-screened equity funds. Similar to conventional equity but with sector exclusions."
+    annual_return: 0.13
+    annual_fee: 0.024
+    volatility: 0.21
+    max_drawdown: -0.33

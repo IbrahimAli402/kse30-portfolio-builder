@@ -496,12 +496,18 @@ with page:
     )
     c1, c2, c3 = st.columns([1.45, 1, 1], gap="large")
     with c1:
-        tier = st.segmented_control("Risk tier", list(TIERS), default="Aggressive", required=True, width="stretch")
+        tier = st.segmented_control(
+            "Risk tier", list(TIERS), default="Aggressive", required=True, width="stretch",
+            help="Conservative: 60% equity / 40% income fund (lower risk). Moderate: 80/20. Aggressive: 100% equity (highest growth potential)."
+        )
         st.caption(f"{TIERS[tier]['equity']:.0%} equity · {TIERS[tier]['income']:.0%} income fund")
     with c2:
         horizon = st.slider("Time horizon (years)", HORIZON_MIN, HORIZON_MAX, HORIZON_DEFAULT)
     with c3:
-        scenario = st.segmented_control("Scenario", list(SCENARIOS), default="Base", required=True, width="stretch")
+        scenario = st.segmented_control(
+            "Scenario", list(SCENARIOS), default="Base", required=True, width="stretch",
+            help="Bull: IMF programme succeeds, reforms proceed. Base: Muddle through, adequate growth. Bear: BoP shock, high inflation."
+        )
         st.caption(f"{SCENARIOS[scenario]['equity_return']:.0%} equity · {SCENARIOS[scenario]['income_return']:.0%} income, per year")
 
     # ---- Model runs --------------------------------------------------------
@@ -526,7 +532,7 @@ with page:
     k4.metric("Max drawdown", f"{risk['Max_Drawdown_%']:.1f}%",
               f"{risk['Annual_Volatility_%']:.1f}% volatility · Sortino {risk['Sortino_Ratio']:.2f}",
               delta_color="off", delta_arrow="off",
-              help=f"Deepest peak-to-trough fall of the {tier} tier, {DATA_START:%Y}–{DATA_END:%Y}.")
+              help="Max Drawdown: The largest percentage drop from a peak to a trough. Volatility: How much the returns swing month-to-month. Sortino Ratio: A measure of risk-adjusted return (higher is better).")
     st.divider()
 
     # ---- Tabs --------------------------------------------------------------
@@ -1002,6 +1008,45 @@ with page:
             if len(selected) < 2:
                 st.warning("Select at least 2 stocks for a basket.")
             else:
+                # ── Recommended Portfolio ────────────────────────────────
+                with st.expander("📊 Generate Recommended Portfolio (Min Variance)"):
+                    st.caption("Auto-selects the top 8 stocks by screen score and weights them "
+                               "for the lowest possible volatility (minimum variance).")
+                    
+                    try:
+                        fd = load_frontier_data()
+                        if fd is not None:
+                            from kse.frontier import get_recommended_portfolio
+                            screen_df_rec = screen_all()
+                            rec = get_recommended_portfolio(fd["returns"], screen_df_rec)
+                            
+                            if rec:
+                                rec_data = []
+                                for ticker, weight in zip(rec["tickers"], rec["weights"]):
+                                    if weight > 0:
+                                        row = stock_df[stock_df["ticker"] == ticker].iloc[0]
+                                        pkr_amount = weight * monthly_amount
+                                        price = row.get("price", 0)
+                                        shares = int(pkr_amount / price) if pd.notna(price) and price > 0 else 0
+                                        rec_data.append({
+                                            "Ticker": ticker,
+                                            "Name": row["name"],
+                                            "Weight": f"{weight:.1%}",
+                                            "PKR Amount": f"{pkr_amount:,.0f}",
+                                            "Shares": shares,
+                                            "Price": f"{price:,.0f}" if pd.notna(price) else "—",
+                                        })
+                                
+                                if rec_data:
+                                    st.dataframe(pd.DataFrame(rec_data), use_container_width=True, hide_index=True)
+                                    st.caption(f"Expected return: {rec['return']:.1%} · Volatility: {rec['volatility']:.1%}")
+                                    st.info("To use this portfolio, select these 8 stocks in the picker above and "
+                                            "use the Custom weights slider to match these weights.")
+                            else:
+                                st.warning("Could not generate recommendation.")
+                    except Exception as e:
+                        st.warning(f"Recommendation unavailable: {e}")
+
                 # ── Weights ───────────────────────────────────────────────
                 bc1, bc2 = st.columns([1, 2])
 
@@ -1102,13 +1147,17 @@ with page:
 
                 sc1, sc2, sc3, sc4 = st.columns(4)
                 with sc1:
-                    st.metric("Avg dividend yield", f"{avg_div:.1%}")
+                    st.metric("Avg dividend yield", f"{avg_div:.1%}",
+                              help="The annual cash dividend paid by the stocks, as a percentage of their price.")
                 with sc2:
-                    st.metric("Avg P/E", f"{avg_pe:.1f}")
+                    st.metric("Avg P/E", f"{avg_pe:.1f}",
+                              help="Price-to-Earnings ratio. How much you pay for PKR 1 of earnings. Lower is generally cheaper.")
                 with sc3:
-                    st.metric("Avg beta", f"{avg_beta:.2f}")
+                    st.metric("Avg beta", f"{avg_beta:.2f}",
+                              help="Measures volatility relative to the KSE 100 index. Beta > 1 means more volatile than the market; < 1 means less volatile.")
                 with sc4:
-                    st.metric("Avg max drawdown", f"{avg_dd:.0%}")
+                    st.metric("Avg max drawdown", f"{avg_dd:.0%}",
+                              help="the largest peak-to-trough drop in the basket's history. a measure of downside risk.")
 
                 st.caption("**Sector concentration:** " + " · ".join(
                     f"{s} {w:.0%}" for s, w in sorted(sector_weights.items(),
@@ -1324,6 +1373,19 @@ with page:
                                             line=dict(color="white", width=2)),
                                 name="Your basket",
                                 hovertemplate="Your basket<br>Vol: %{x:.1%}<br>Return: %{y:.1%}<extra></extra>"
+                            ))
+                        # Recommended portfolio
+                        from kse.frontier import get_recommended_portfolio
+                        screen_df_rec = screen_all()
+                        rec = get_recommended_portfolio(fd["returns"], screen_df_rec)
+                        if rec:
+                            fig_front.add_trace(go.Scatter(
+                                x=[rec["volatility"]], y=[rec["return"]],
+                                mode="markers",
+                                marker=dict(size=14, color="#9b59b6", symbol="cross",
+                                            line=dict(color="white", width=2)),
+                                name="Recommended (Min Var)",
+                                hovertemplate="Recommended<br>Vol: %{x:.1%}<br>Return: %{y:.1%}<extra></extra>"
                             ))
 
                         fig_front.update_layout(

@@ -155,7 +155,7 @@ def compute_efficient_frontier(returns_df, n_points=25):
     constraints = [
         {"type": "eq", "fun": lambda w: np.sum(w) - 1},
     ]
-    bounds = [(0, 1)] * n
+    bounds = [(0.01, 1)] * n  # force a minimum 1% weight per stock
 
     # Sweep target returns
     min_ret = mean_returns.min()
@@ -241,3 +241,59 @@ def compute_portfolio_stats(returns_df, weights_dict):
     port_vol = np.sqrt(weights @ cov_matrix @ weights)
 
     return {"return": port_return, "volatility": port_vol}
+def get_recommended_portfolio(returns_df, screen_df, n_stocks=8):
+    """
+    Generate a recommended portfolio:
+    1. Select top N stocks by composite screen score.
+    2. Weight them using the minimum variance portfolio.
+    
+    Returns dict with tickers, weights, return, volatility.
+    """
+    from scipy.optimize import minimize
+    
+    # 1. Select top N stocks by screen score
+    top_stocks = screen_df.head(n_stocks)["Ticker"].tolist()
+    
+    # Filter to only include stocks that have return data
+    available_stocks = [t for t in top_stocks if t in returns_df.columns]
+    
+    if not available_stocks:
+        return None
+        
+    ret_df = returns_df[available_stocks]
+    n = len(available_stocks)
+    
+    # 2. Calculate minimum variance weights
+    mean_returns = ret_df.mean() * 12
+    cov_matrix = ret_df.cov() * 12
+    
+    def portfolio_variance(w):
+        return w @ cov_matrix @ w
+    
+    constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - 1}]
+    bounds = [(0.01, 1)] * n  # force a minimum 1% weight per stock
+    x0 = np.ones(n) / n
+    
+    result = minimize(
+        portfolio_variance,
+        x0=x0,
+        method="SLSQP",
+        constraints=constraints,
+        bounds=bounds,
+        options={"maxiter": 1000, "ftol": 1e-10}
+    )
+    
+    if not result.success:
+        weights = np.ones(n) / n
+    else:
+        weights = result.x
+        
+    port_return = np.dot(weights, mean_returns)
+    port_vol = np.sqrt(weights @ cov_matrix @ weights)
+    
+    return {
+        "tickers": available_stocks,
+        "weights": weights,
+        "return": port_return,
+        "volatility": port_vol
+    }

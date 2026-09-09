@@ -28,6 +28,8 @@ from kse.scenarios import get_all_scenarios, DEFAULT_WEIGHTS, blend_scenarios
 from kse.blocks import expected_return, calculate_all_expected_returns
 from kse.screen import screen_all
 from kse.data_pipeline import load_stock_metrics, load_kse30_constituents, check_data_freshness
+from kse.currency import load_fx_data, get_currency_stats, convert_returns_to_usd
+from kse.benchmark import compare_to_benchmark, rolling_alpha
 from kse.risk_metrics import (
     compute_var_cvar,
     stress_test_portfolio,
@@ -80,7 +82,16 @@ WEIGHT_PRESETS = {
     "Pessimistic (15/45/40)": {"Bull": 0.15, "Base": 0.45, "Bear": 0.40},
 }
 
-PKR_USD = 280  # Starting exchange rate for USD toggle
+# Load real FX data for currency-adjusted returns
+@st.cache_data(show_spinner=False)
+def load_fx():
+    try:
+        return load_fx_data()
+    except FileNotFoundError:
+        return None
+
+FX_DATA = load_fx()
+PKR_USD = FX_DATA["Rate"].iloc[-1] if FX_DATA is not None else 280
 
 # ---------------------------------------------------------------------------
 # Design tokens (DESIGN.md) — chart-side mirror of config.toml
@@ -748,15 +759,15 @@ with page:
             st.dataframe(pd.DataFrame(stress_rows), use_container_width=True, hide_index=True)
 
             # Detail chart for selected crisis
-            crisis_names = [n for n, r in stress.items() if "error" not in r]
-            if crisis_names:
-                selected_crisis = st.selectbox(
-                    "Inspect a crisis in detail:", crisis_names,
+            crisis_items = {r["label"]: n for n, r in stress.items() if "error" not in r}
+            if crisis_items:
+                selected_label = st.selectbox(
+                    "Inspect a crisis in detail:", list(crisis_items.keys()),
                     key="stress_crisis_detail"
                 )
-                detail = stress[selected_crisis]
+                detail = stress[crisis_items[selected_label]]
 
-                st.markdown(f"*{detail['description']}*")
+                st.caption(detail["description"])
 
                 fig_stress = go.Figure()
                 wealth = (1 + detail["monthly_returns"]).cumprod() * 100
@@ -890,7 +901,45 @@ with page:
             st.info("Regime model module not available. Correlation regime analysis requires `kse.regimes`.")
         except Exception as e:
             st.info(f"Correlation regime analysis unavailable: {e}")
+                
+        # ── Currency-Adjusted Returns ──────────────────────────────────
+        st.divider()
+        st.subheader("Currency-adjusted returns (PKR vs USD)")
+        st.caption(
+            "PKR returns overstate real wealth creation when the currency is "
+            "depreciating. This shows what a foreign investor (or one with USD "
+            "expenses) actually earned."
+        )
 
+        try:
+            if FX_DATA is not None:
+                cstats = get_currency_stats(tier_rets, FX_DATA)
+
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("PKR annual return", f"{cstats['pkr_annual_return']:.1%}",
+                          delta_color="off", delta_arrow="off")
+                c2.metric("USD annual return", f"{cstats['usd_annual_return']:.1%}",
+                          delta_color="off", delta_arrow="off")
+                c3.metric("Currency drag", f"{cstats['currency_drag']:.1%}",
+                          help="Annualized return lost to PKR depreciation.",
+                          delta_color="inverse")
+                c4.metric("Total depreciation", f"{cstats['total_depreciation']:.1%}",
+                          help=f"PKR fell from {cstats['start_rate']:.0f} to {cstats['end_rate']:.0f} per USD over this period.",
+                          delta_color="off", delta_arrow="off")
+
+                insight(
+                    f"The {tier} tier returned {cstats['pkr_annual_return']:.1%} per year in PKR, "
+                    f"but only {cstats['usd_annual_return']:.1%} in USD terms — a "
+                    f"{cstats['currency_drag']:.1%} annual drag from currency depreciation. "
+                    f"Over the full period, PKR depreciated {cstats['total_depreciation']:.0%} "
+                    f"against the USD (from {cstats['start_rate']:.0f} to {cstats['end_rate']:.0f}). "
+                    "For investors with USD expenses (education, imports, travel), "
+                    "the USD number is the real return."
+                )
+            else:
+                st.info("USD/PKR data not loaded. Run: `python scripts/fetch_fx.py`")
+        except Exception as e:
+            st.warning(f"Currency analysis unavailable: {e}")
     with tab_worst:
         st.subheader("The worst time to start")
         st.caption(f"A SIP begun at the {tr_episode['peak']:%B %Y} market peak — right before the "
@@ -1397,78 +1446,186 @@ with page:
                         st.warning(f"Screen scores unavailable: {e}")
 
                 # ── Comparison: Basket vs Index ─────────────────────────────
+                                # ── Basket vs KSE 100 Benchmark Comparison ─────────────────
                 st.divider()
-                st.markdown("**Basket vs KSE 100 comparison**")
-                st.caption("Illustrative — actual comparison requires running the SIP "
-                           "engine on the basket's total return series from PSX data.")
+                st.markdown("**Basket vs KSE 100 benchmark**")
+                st.caption(
+                    "Full risk-return comparison: returns, risk, alpha, beta, "
+                    "and capture ratios. Based on historical monthly returns."
+                )
 
                 try:
-                    from kse.blocks import expected_return
-                    base_ret, _, _ = expected_return("Base")
+                    fd = load_frontier_data()
+                    if fd is not None and len(selected) >= 2:
+                        from kse.frontier import compute_portfolio_stats
+                        basket_stats = compute_portfolio_stats(fd["returns"], weights_basket)
 
-                    months_proj = horizon * 12
-                    monthly_ret = (1 + base_ret) ** (1/12) - 1
-                    monthly_fee = ANNUAL_FEE / 12
+                        if basket_stats:
+                            # Build portfolio return series from stock returns
+                            available_tickers = [t for t in selected if t in fd["returns"].columns]
+                            if len(available_tickers) >= 2:
+                                w = pd.Series(weights_basket)
+                                w = w[available_tickers]
+                                w = w / w.sum()
+                                port_returns = (fd["returns"][available_tickers] * w).sum(axis=1)
 
-                    idx_values = []
-                    pv_idx = 0
-                    for m in range(months_proj):
-                        pv_idx = pv_idx * (1 + monthly_ret - monthly_fee) + monthly_amount * (1 - TX_COST_PCT)
-                        idx_values.append(pv_idx)
+                                # Benchmark = KSE-100 total returns
+                                bench_returns = TR["Total_Return"]
 
-                    basket_ret_monthly = (1 + base_ret * avg_beta) ** (1/12) - 1
-                    basket_values = []
-                    pv_basket = 0
-                    for m in range(months_proj):
-                        pv_basket = pv_basket * (1 + basket_ret_monthly - monthly_fee) + monthly_amount * (1 - TX_COST_PCT)
-                        basket_values.append(pv_basket)
+                                # Run comparison
+                                cmp = compare_to_benchmark(port_returns, bench_returns)
 
-                    fig_cmp = go.Figure()
-                    fig_cmp.add_trace(go.Scatter(
-                        x=list(range(1, months_proj + 1)),
-                        y=basket_values, mode="lines",
-                        name=f"Basket ({avg_beta:.2f} β)",
-                        line=dict(color="#c96442", width=2.5)
-                    ))
-                    fig_cmp.add_trace(go.Scatter(
-                        x=list(range(1, months_proj + 1)),
-                        y=idx_values, mode="lines",
-                        name="KSE 100 (β=1.0)",
-                        line=dict(color="gray", width=2, dash="dash")
-                    ))
+                                # KPI row
+                                bc1, bc2, bc3, bc4 = st.columns(4)
+                                bc1.metric(
+                                    "Annual return",
+                                    f"{cmp['portfolio_stats']['annual_return']:.1%}",
+                                    f"vs {cmp['benchmark_stats']['annual_return']:.1%} index",
+                                    delta_color="normal",
+                                )
+                                bc2.metric(
+                                    "Volatility",
+                                    f"{cmp['portfolio_stats']['annual_volatility']:.1%}",
+                                    f"vs {cmp['benchmark_stats']['annual_volatility']:.1%} index",
+                                    delta_color="inverse",
+                                )
+                                bc3.metric(
+                                    "Max drawdown",
+                                    f"{cmp['portfolio_stats']['max_drawdown']:.1%}",
+                                    f"vs {cmp['benchmark_stats']['max_drawdown']:.1%} index",
+                                    delta_color="inverse",
+                                )
+                                bc4.metric(
+                                    "Sharpe ratio",
+                                    f"{cmp['portfolio_stats']['sharpe']:.2f}",
+                                    f"vs {cmp['benchmark_stats']['sharpe']:.2f} index",
+                                    delta_color="normal",
+                                )
 
-                    fig_cmp.update_layout(
-                        xaxis_title="Months", yaxis_title="Portfolio value",
-                        height=350, hovermode="x unified",
-                        legend=dict(orientation="h", yanchor="bottom", y=1.02),
-                        margin=dict(l=10, r=10, t=10, b=10),
-                    )
-                    st.plotly_chart(fig_cmp, use_container_width=True)
+                                # Second row: alpha, beta, capture
+                                ac1, ac2, ac3, ac4 = st.columns(4)
+                                ac1.metric(
+                                    "Alpha (annual)",
+                                    f"{cmp['alpha']:+.1%}",
+                                    help="CAPM alpha: excess return not explained by market movements. Positive = outperformance.",
+                                    delta_color="normal",
+                                )
+                                ac2.metric(
+                                    "Beta",
+                                    f"{cmp['beta']:.2f}",
+                                    help="Sensitivity to market movements. 1.0 = moves with market. <1 = less volatile. >1 = more volatile.",
+                                    delta_color="off", delta_arrow="off",
+                                )
+                                ac3.metric(
+                                    "Up capture",
+                                    f"{cmp['up_capture']:.1%}",
+                                    help="When the index rose, the basket captured this fraction of the gain.",
+                                    delta_color="normal",
+                                )
+                                ac4.metric(
+                                    "Down capture",
+                                    f"{cmp['down_capture']:.1%}",
+                                    help="When the index fell, the basket captured this fraction of the loss. Lower is better.",
+                                    delta_color="inverse",
+                                )
 
-                    cmp1, cmp2, cmp3, cmp4 = st.columns(4)
-                    with cmp1:
-                        st.metric("Basket terminal", fmt_pkr(basket_values[-1]))
-                    with cmp2:
-                        st.metric("Index terminal", fmt_pkr(idx_values[-1]))
-                    with cmp3:
-                        diff_pct = (basket_values[-1] / idx_values[-1] - 1) * 100
-                        st.metric("Difference", f"{diff_pct:+.0f}%",
-                                  delta_color="inverse" if diff_pct < 0 else "normal")
-                    with cmp4:
-                        st.metric("Basket drawdown", f"{avg_dd:.0%}",
-                                  delta=f"{avg_dd - 0.33:+.0%} vs index",
-                                  delta_color="inverse")
+                                # Comparison chart: cumulative returns (aligned dates only)
+                                common_dates = port_returns.index.intersection(bench_returns.index)
+                                port_aligned = port_returns.loc[common_dates]
+                                bench_aligned = bench_returns.loc[common_dates]
+                                port_cum = (1 + port_aligned).cumprod() * 100
+                                bench_cum = (1 + bench_aligned).cumprod() * 100
 
-                    st.info(
-                        f"**Key insight:** The basket has a {'higher' if avg_div > 0.065 else 'lower'} "
-                        f"dividend yield ({avg_div:.1%}) and {'lower' if avg_pe < 7.5 else 'higher'} "
-                        f"P/E ({avg_pe:.1f}) than the index, but a "
-                        f"{'deeper' if avg_dd > 0.33 else 'shallower'} drawdown ({avg_dd:.0%} vs ~33%). "
-                        f"This is the concentration risk tradeoff — you get more income and cheaper "
-                        f"valuation, but you take more drawdown risk."
-                    )
+                                fig_bench = go.Figure()
+                                fig_bench.add_trace(go.Scatter(
+                                    x=port_cum.index, y=port_cum.values,
+                                    mode="lines", name="Your basket",
+                                    line=dict(color=tk["accent"], width=2.5),
+                                    hovertemplate="%{x|%b %Y}: %{y:.1f}<extra>Basket</extra>",
+                                ))
+                                fig_bench.add_trace(go.Scatter(
+                                    x=bench_cum.index, y=bench_cum.values,
+                                    mode="lines", name="KSE 100",
+                                    line=dict(color=tk["invested"], width=2, dash="dash"),
+                                    hovertemplate="%{x|%b %Y}: %{y:.1f}<extra>KSE 100</extra>",
+                                ))
+                                fig_bench.update_layout(**base_layout(tk, legend=True, height=350))
+                                fig_bench.update_yaxes(title_text="Growth of PKR 100")
+                                fig_bench.update_xaxes(dtick="M12", tickformat="%Y")
+                                st.plotly_chart(fig_bench, theme=None, config=PLOTLY_CONFIG,
+                                                key="benchmark_cumulative", use_container_width=True)
+
+                                # Insight
+                                if cmp["alpha"] > 0:
+                                    alpha_msg = f"outperformed by {cmp['alpha']:.1%} per year"
+                                else:
+                                    alpha_msg = f"underperformed by {abs(cmp['alpha']):.1%} per year"
+
+                                if cmp["down_capture"] < 1:
+                                    dd_msg = f"lost only {cmp['down_capture']:.0%} of the index's downside"
+                                else:
+                                    dd_msg = f"amplified the index's downside by {cmp['down_capture']:.0%}"
+
+                                insight(
+                                    f"Your basket {alpha_msg} (alpha) relative to the KSE-100. "
+                                    f"Beta of {cmp['beta']:.2f} means it moves "
+                                    f"{'more' if cmp['beta'] > 1 else 'less'} than the market. "
+                                    f"It {dd_msg}. "
+                                    f"Tracking error of {cmp['tracking_error']:.1%} and "
+                                    f"information ratio of {cmp['information_ratio']:.2f}."
+                                )
+
+                                # Rolling alpha chart (expandable)
+                                with st.expander("Rolling 3-year alpha"):
+                                    roll = rolling_alpha(port_returns, bench_returns, window=36)
+                                    if len(roll) > 0:
+                                        fig_roll = go.Figure()
+                                        fig_roll.add_trace(go.Scatter(
+                                            x=roll.index, y=roll["alpha"],
+                                            mode="lines", name="Rolling alpha",
+                                            line=dict(color=tk["accent"], width=2),
+                                            hovertemplate="%{x|%b %Y}: %{y:+.1%}<extra>Alpha</extra>",
+                                        ))
+                                        fig_roll.add_hline(y=0, line_dash="dash",
+                                                           line_color=tk["muted"])
+                                        fig_roll.update_layout(**base_layout(tk, height=300))
+                                        fig_roll.update_yaxes(title_text="Annualized alpha",
+                                                               ticksuffix="%")
+                                        fig_roll.update_xaxes(dtick="M12", tickformat="%Y")
+                                        st.plotly_chart(fig_roll, theme=None, config=PLOTLY_CONFIG,
+                                                        key="rolling_alpha", use_container_width=True)
+                                        st.caption(
+                                            f"Rolling 36-month alpha. Positive values mean the basket "
+                                            f"outperformed the index over that 3-year window. "
+                                            f"Average: {roll['alpha'].mean():+.1%} per year."
+                                        )
+                                    else:
+                                        st.info("Not enough data for rolling alpha (needs 36+ months).")
+
+                                # Detailed stats table (expandable)
+                                with st.expander("Detailed benchmark statistics"):
+                                    stats_data = [
+                                        {"Metric": "Annual return", "Basket": f"{cmp['portfolio_stats']['annual_return']:.2%}", "KSE 100": f"{cmp['benchmark_stats']['annual_return']:.2%}"},
+                                        {"Metric": "Annual volatility", "Basket": f"{cmp['portfolio_stats']['annual_volatility']:.2%}", "KSE 100": f"{cmp['benchmark_stats']['annual_volatility']:.2%}"},
+                                        {"Metric": "Sharpe ratio", "Basket": f"{cmp['portfolio_stats']['sharpe']:.3f}", "KSE 100": f"{cmp['benchmark_stats']['sharpe']:.3f}"},
+                                        {"Metric": "Sortino ratio", "Basket": f"{cmp['portfolio_stats']['sortino']:.3f}", "KSE 100": f"{cmp['benchmark_stats']['sortino']:.3f}"},
+                                        {"Metric": "Max drawdown", "Basket": f"{cmp['portfolio_stats']['max_drawdown']:.2%}", "KSE 100": f"{cmp['benchmark_stats']['max_drawdown']:.2%}"},
+                                        {"Metric": "Cumulative return", "Basket": f"{cmp['portfolio_stats']['cumulative_return']:.2%}", "KSE 100": f"{cmp['benchmark_stats']['cumulative_return']:.2%}"},
+                                        {"Metric": "Alpha (annual)", "Basket": f"{cmp['alpha']:+.2%}", "KSE 100": "—"},
+                                        {"Metric": "Beta", "Basket": f"{cmp['beta']:.3f}", "KSE 100": "1.000"},
+                                        {"Metric": "R²", "Basket": f"{cmp['r_squared']:.3f}", "KSE 100": "—"},
+                                        {"Metric": "Up capture", "Basket": f"{cmp['up_capture']:.1%}", "KSE 100": "100%"},
+                                        {"Metric": "Down capture", "Basket": f"{cmp['down_capture']:.1%}", "KSE 100": "100%"},
+                                        {"Metric": "Tracking error", "Basket": f"{cmp['tracking_error']:.2%}", "KSE 100": "—"},
+                                        {"Metric": "Information ratio", "Basket": f"{cmp['information_ratio']:.3f}", "KSE 100": "—"},
+                                    ]
+                                    st.dataframe(pd.DataFrame(stats_data), use_container_width=True, hide_index=True)
+                            else:
+                                st.info("Not enough overlapping data between basket stocks and KSE-100 for benchmark comparison.")
+                    else:
+                        st.info("Frontier data not loaded. Select at least 2 stocks to see benchmark comparison.")
                 except Exception as e:
-                    st.warning(f"Comparison chart unavailable: {e}")
+                    st.warning(f"Benchmark comparison unavailable: {e}")
                                     # ── Diversification Curve ───────────────────────────────
                 st.divider()
                 st.markdown("**Diversification benefit**")

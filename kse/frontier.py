@@ -147,6 +147,7 @@ def compute_efficient_frontier(returns_df, n_points=25):
     ew_weights = np.ones(n) / n
     ew_return = np.dot(ew_weights, mean_returns)
     ew_vol = np.sqrt(ew_weights @ cov_matrix @ ew_weights)
+    equal_weight = {"return": ew_return, "volatility": ew_vol, "weights": ew_weights, "tickers": list(tickers)}
 
     # Optimization helpers
     def portfolio_variance(w):
@@ -204,15 +205,23 @@ def compute_efficient_frontier(returns_df, n_points=25):
         mv_weights = result_min_var.x
         mv_return = np.dot(mv_weights, mean_returns)
         mv_vol = np.sqrt(mv_weights @ cov_matrix @ mv_weights)
-        min_var = {"return": mv_return, "volatility": mv_vol}
+        min_var = {"return": mv_return, "volatility": mv_vol, "weights": mv_weights, "tickers": list(tickers)}
     else:
-        min_var = {"return": ew_return, "volatility": ew_vol}
+        min_var = {"return": ew_return, "volatility": ew_vol, "weights": ew_weights, "tickers": list(tickers)}
+
+    # maximum return portfolio (top of the efficient frontier)
+    max_ret_idx = frontier_df["return"].idxmax()
+    max_ret_weights = frontier_df.loc[max_ret_idx, "weights"]
+    max_ret_return = frontier_df.loc[max_ret_idx, "return"]
+    max_ret_vol = frontier_df.loc[max_ret_idx, "volatility"]
+    max_ret = {"return": max_ret_return, "volatility": max_ret_vol, "weights": max_ret_weights, "tickers": list(tickers)}
 
     return {
         "frontier": frontier_df,
         "stock_stats": stock_stats,
-        "equal_weight": {"return": ew_return, "volatility": ew_vol},
+        "equal_weight": equal_weight,
         "min_var": min_var,
+        "max_ret": max_ret,
     }
 
 

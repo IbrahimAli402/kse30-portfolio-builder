@@ -1282,6 +1282,23 @@ with page:
                             hovertemplate="%{x} stocks: %{y:.1%} volatility<extra></extra>"
                         ))
 
+                        # Add marker for user's current basket
+                        from kse.frontier import compute_portfolio_stats
+                        basket_stats_div = compute_portfolio_stats(fd["returns"], weights_basket)
+                        if basket_stats_div:
+                            fig_div.add_trace(go.Scatter(
+                                x=[len(selected)],
+                                y=[basket_stats_div["volatility"]],
+                                mode="markers+text",
+                                marker=dict(size=14, color="#c96442", symbol="circle",
+                                            line=dict(color="white", width=2)),
+                                name="Your basket",
+                                text=["Your basket"],
+                                textposition="top center",
+                                textfont=dict(color="#c96442", size=11),
+                                hovertemplate="Your basket<br>Stocks: %{x}<br>Vol: %{y:.1%}<extra></extra>"
+                            ))
+
                         fig_div.update_layout(
                             xaxis_title="Number of stocks in portfolio",
                             yaxis_title="Annualized volatility",
@@ -1374,6 +1391,7 @@ with page:
                                 name="Your basket",
                                 hovertemplate="Your basket<br>Vol: %{x:.1%}<br>Return: %{y:.1%}<extra></extra>"
                             ))
+
                         # Recommended portfolio
                         from kse.frontier import get_recommended_portfolio
                         screen_df_rec = screen_all()
@@ -1394,6 +1412,7 @@ with page:
                             height=400, hovermode="closest",
                             legend=dict(orientation="h", yanchor="bottom", y=1.02),
                             margin=dict(l=10, r=10, t=10, b=10),
+                            clickmode='event+select'  # Enables click-to-highlight
                         )
                         st.plotly_chart(fig_front, use_container_width=True)
 
@@ -1405,6 +1424,56 @@ with page:
                             "optimized portfolios out-of-sample. Use this as an educational tool, "
                             "not as investment advice."
                         )
+
+                        # ── Interactive Portfolio Inspector ──────────────────
+                        st.divider()
+                        st.markdown("**Inspect portfolio composition**")
+                        st.caption("Select a portfolio to see its underlying stock weights, PKR amounts, and share counts.")
+
+                        portfolio_choice = st.selectbox(
+                            "Select a portfolio to inspect:",
+                            ["Minimum Variance", "Equal-Weight", "Maximum Return", "Your Custom Basket"],
+                            key="frontier_portfolio_inspector", # Unique key to prevent errors
+                            label_visibility="collapsed"
+                        )
+
+                        # Get the selected portfolio's weights
+                        if portfolio_choice == "Minimum Variance":
+                            sel_weights = fr["min_var"]["weights"]
+                            sel_tickers = fr["min_var"]["tickers"]
+                        elif portfolio_choice == "Equal-Weight":
+                            sel_weights = fr["equal_weight"]["weights"]
+                            sel_tickers = fr["equal_weight"]["tickers"]
+                        elif portfolio_choice == "Maximum Return":
+                            sel_weights = fr["max_ret"]["weights"]
+                            sel_tickers = fr["max_ret"]["tickers"]
+                        else:  # Your Custom Basket
+                            sel_tickers = list(fd["returns"].columns)
+                            sel_weights = np.array([weights_basket.get(t, 0) for t in sel_tickers])
+                            if sel_weights.sum() > 0:
+                                sel_weights = sel_weights / sel_weights.sum()
+
+                        # Build the composition table
+                        comp_data = []
+                        for ticker, weight in zip(sel_tickers, sel_weights):
+                            if weight > 0.001:  # Only show > 0.1%
+                                row = stock_df[stock_df["ticker"] == ticker].iloc[0]
+                                pkr_amount = weight * monthly_amount
+                                price = row.get("price", 0)
+                                shares = int(pkr_amount / price) if pd.notna(price) and price > 0 else 0
+                                comp_data.append({
+                                    "Ticker": ticker,
+                                    "Name": row["name"],
+                                    "Weight": f"{weight:.1%}",
+                                    "PKR Amount": f"{pkr_amount:,.0f}",
+                                    "Shares": shares
+                                })
+
+                        if comp_data:
+                            st.dataframe(pd.DataFrame(comp_data), use_container_width=True, hide_index=True)
+                        else:
+                            st.info("No composition data available for this selection.")
+
                 except Exception as e:
                     st.warning(f"Efficient frontier unavailable: {e}")
 

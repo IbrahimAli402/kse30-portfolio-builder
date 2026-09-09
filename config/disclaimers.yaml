@@ -1,0 +1,84 @@
+# config/disclaimers.yaml
+# Regulatory disclaimers and data source metadata for the KSE 100 Portfolio Builder.
+
+disclaimer:
+  short: "Not investment advice. Analytical and educational tool only."
+  full: >
+    This application is an analytical and educational tool, not investment advice.
+    It is not registered with the Securities and Exchange Commission of Pakistan (SECP)
+    as an investment adviser or broker-dealer. The portfolio recommendations, Monte Carlo
+    simulations, and risk metrics are generated from historical data and quantitative models
+    that have limitations. Past performance does not guarantee future results. The models
+    assume that future market conditions will resemble the past, which may not occur.
+    Consult a licensed financial adviser before making investment decisions.
+
+data_sources:
+  kse100_returns:
+    label: "KSE 100 Total Returns"
+    source: "Investing.com (via yfinance)"
+    file: "data/processed/kse_monthly_total_return.csv"
+    as_of: "2024-12-31"
+    description: "Monthly total returns (price + dividend) for the KSE-100 index."
+  portfolio_returns:
+    label: "Tier Portfolio Returns"
+    source: "Computed from KSE-100 total returns"
+    file: "data/processed/portfolio_returns.csv"
+    as_of: "2024-12-31"
+    description: "Monthly returns for Conservative, Moderate, and Aggressive tiers."
+  risk_metrics:
+    label: "Risk Metrics Summary"
+    source: "Computed from portfolio returns"
+    file: "data/processed/risk_metrics_summary.csv"
+    as_of: "2024-12-31"
+    description: "Max drawdown, volatility, Sortino ratio per tier."
+  stock_metrics:
+    label: "KSE 30 Stock Metrics"
+    source: "yfinance + manual entry"
+    file: "data/processed/stock_metrics.csv"
+    as_of: "2024-12-31"
+    description: "P/E, P/B, ROE, dividend yield, beta, max drawdown for KSE-30 stocks."
+  usd_pkr:
+    label: "USD/PKR Exchange Rate"
+    source: "yfinance (PKR=X)"
+    file: "data/processed/usd_pkr_monthly.csv"
+    as_of: "dynamic"
+    description: "Monthly USD/PKR exchange rates for currency-adjusted returns."
+
+suitability:
+  questions:
+    - id: horizon
+      question: "What is your investment horizon?"
+      options:
+        - "Short (1-3 years)"
+        - "Medium (3-7 years)"
+        - "Long (7+ years)"
+      scores: [1, 2, 3]
+    - id: tolerance
+      question: "How would you react to a 30% portfolio drop in one month?"
+      options:
+        - "Sell everything immediately"
+        - "Sell some positions to reduce risk"
+        - "Hold and wait for recovery"
+        - "Buy more at lower prices"
+      scores: [1, 2, 3, 4]
+    - id: knowledge
+      question: "How would you rate your investment knowledge?"
+      options:
+        - "Beginner — I'm learning the basics"
+        - "Intermediate — I understand key concepts"
+        - "Advanced — I can analyze financial statements"
+      scores: [1, 2, 3]
+    - id: income
+      question: "What is your monthly investment capacity?"
+      options:
+        - "Under PKR 50,000"
+        - "PKR 50,000 - 100,000"
+        - "PKR 100,000 - 200,000"
+        - "Above PKR 200,000"
+      scores: [1, 2, 3, 4]
+
+  # Score thresholds map to risk tiers
+  thresholds:
+    conservative: 4      # Score 4-6 → Conservative
+    moderate: 7          # Score 7-9 → Moderate
+    aggressive: 10       # Score 10+ → Aggressive

@@ -30,6 +30,7 @@ from kse.screen import screen_all
 from kse.data_pipeline import load_stock_metrics, load_kse30_constituents, check_data_freshness
 from kse.currency import load_fx_data, get_currency_stats, convert_returns_to_usd
 from kse.benchmark import compare_to_benchmark, rolling_alpha
+from kse.compliance import get_disclaimer, get_data_provenance, get_suitability_questions, assess_suitability
 from kse.risk_metrics import (
     compute_var_cvar,
     stress_test_portfolio,
@@ -499,6 +500,72 @@ page = outer.container(width=960)
 
 with page:
     st.title("KSE 100 Portfolio Builder")
+    
+    # ── Suitability Questionnaire (collapsible) ────────────────────────
+    if "suitability_done" not in st.session_state:
+        st.session_state["suitability_done"] = False
+
+    if not st.session_state["suitability_done"]:
+        with st.expander("Before you begin — quick suitability check (3 questions)", expanded=True):
+            st.caption("This helps us suggest a risk tier. You can skip this and choose manually.")
+            questions = get_suitability_questions()
+            answers = {}
+            for q in questions:
+                answers[q["id"]] = st.radio(
+                    q["question"], q["options"],
+                    key=f"suit_{q['id']}", index=None
+                )
+
+            col_skip, col_submit = st.columns([1, 1])
+            with col_skip:
+                if st.button("Skip", key="suit_skip"):
+                    st.session_state["suitability_done"] = True
+                    st.rerun()
+            with col_submit:
+                if st.button("Submit", key="suit_submit", type="primary"):
+                    # Convert selected option strings to indices
+                    answer_indices = {}
+                    for q in questions:
+                        sel = answers[q["id"]]
+                        if sel is not None:
+                            answer_indices[q["id"]] = q["options"].index(sel)
+
+                    if len(answer_indices) == len(questions):
+                        result = assess_suitability(answer_indices)
+                        st.session_state["suitability_done"] = True
+                        st.session_state["suitability_tier"] = result["recommended_tier"]
+                        st.session_state["suitability_reason"] = result["tier_reason"]
+
+                        # Map answers to dashboard controls
+                        amount_map = {
+                            "Under PKR 50,000": 25000,
+                            "PKR 50,000 - 100,000": 75000,
+                            "PKR 100,000 - 200,000": 150000,
+                            "Above PKR 200,000": 200000,
+                        }
+                        horizon_map = {
+                            "Short (1-3 years)": 5,
+                            "Medium (3-7 years)": 7,
+                            "Long (7+ years)": 15,
+                        }
+                        st.session_state["suitability_amount"] = amount_map.get(answers["income"], AMOUNT_DEFAULT)
+                        st.session_state["suitability_horizon"] = horizon_map.get(answers["horizon"], HORIZON_DEFAULT)
+                        st.session_state["apply_suitability"] = True
+
+                        st.rerun()
+                    else:
+                        st.warning("Please answer all questions.")
+
+    elif "suitability_tier" in st.session_state:
+        with st.expander(f"Suitability assessment: {st.session_state['suitability_tier']}", expanded=False):
+            st.success(st.session_state["suitability_reason"])
+            st.info("Your risk tier, monthly amount, and time horizon have been set based on your answers. Adjust them anytime above.")
+            if st.button("Retake", key="suit_retake"):
+                st.session_state["suitability_done"] = False
+                st.rerun()
+
+    # ── Disclaimer banner ──────────────────────────────────────────────
+    st.warning(get_disclaimer("short"))
     st.markdown(
         "A systematic-investment-plan backtest and forward-looking forecast for young Pakistani earners. "
         f"The first four tabs compute historical figures from KSE 100 total returns ({DATA_START:%b %Y} – {DATA_END:%b %Y}). "
@@ -507,19 +574,37 @@ with page:
 
     # ---- Controls ----------------------------------------------------------
     st.space("small")
+
+    # Initialize widget defaults if not yet set
+    if "ctrl_amount" not in st.session_state:
+        st.session_state["ctrl_amount"] = AMOUNT_DEFAULT
+    if "ctrl_tier" not in st.session_state:
+        st.session_state["ctrl_tier"] = "Aggressive"
+    if "ctrl_horizon" not in st.session_state:
+        st.session_state["ctrl_horizon"] = HORIZON_DEFAULT
+
+    # Apply suitability assessment results to controls
+    if st.session_state.get("apply_suitability", False):
+        st.session_state["ctrl_amount"] = st.session_state["suitability_amount"]
+        st.session_state["ctrl_tier"] = st.session_state["suitability_tier"]
+        st.session_state["ctrl_horizon"] = st.session_state["suitability_horizon"]
+        st.session_state["apply_suitability"] = False
+
     monthly_amount = st.select_slider(
         "Monthly investment", options=list(range(AMOUNT_MIN, AMOUNT_MAX + 1, AMOUNT_STEP)),
-        value=AMOUNT_DEFAULT, format_func=fmt_pkr, help="Deposited on the last trading day of every month.",
+        format_func=fmt_pkr, key="ctrl_amount",
+        help="Deposited on the last trading day of every month.",
     )
     c1, c2, c3 = st.columns([1.45, 1, 1], gap="large")
     with c1:
         tier = st.segmented_control(
-            "Risk tier", list(TIERS), default="Aggressive", required=True, width="stretch",
+            "Risk tier", list(TIERS), required=True, width="stretch",
+            key="ctrl_tier",
             help="Conservative: 60% equity / 40% income fund (lower risk). Moderate: 80/20. Aggressive: 100% equity (highest growth potential)."
         )
         st.caption(f"{TIERS[tier]['equity']:.0%} equity · {TIERS[tier]['income']:.0%} income fund")
     with c2:
-        horizon = st.slider("Time horizon (years)", HORIZON_MIN, HORIZON_MAX, HORIZON_DEFAULT)
+        horizon = st.slider("Time horizon (years)", HORIZON_MIN, HORIZON_MAX, key="ctrl_horizon")
     with c3:
         scenario = st.segmented_control(
             "Scenario", list(SCENARIOS), default="Base", required=True, width="stretch",
@@ -904,11 +989,11 @@ with page:
                 
         # ── Currency-Adjusted Returns ──────────────────────────────────
         st.divider()
-        st.subheader("Currency-adjusted returns (PKR vs USD)")
+        fx_as_of = f"{FX_DATA.index[-1]:%b %Y}" if FX_DATA is not None else "N/A"
         st.caption(
-            "PKR returns overstate real wealth creation when the currency is "
-            "depreciating. This shows what a foreign investor (or one with USD "
-            "expenses) actually earned."
+            f"PKR returns overstate real wealth creation when the currency is "
+            f"depreciating. This shows what a foreign investor (or one with USD "
+            f"expenses) actually earned. · USD/PKR data as of {fx_as_of}"
         )
 
         try:
@@ -1864,8 +1949,27 @@ with page:
 
 
 st.space("large")
+
+# ── Data Provenance ────────────────────────────────────────────────────
+with st.expander("Data sources & methodology"):
+    provenance = get_data_provenance()
+    for key, info in provenance.items():
+        as_of = info.get("as_of", "N/A")
+        if as_of == "dynamic":
+            as_of = f"{FX_DATA.index[-1]:%b %Y}" if FX_DATA is not None else "N/A"
+        st.markdown(
+            f"**{info['label']}** · Source: {info.get('source', 'N/A')} · "
+            f"As of: {as_of} · File: `{info.get('file', 'N/A')}`"
+        )
+        st.caption(info.get("description", ""))
+
+st.divider()
+
+# ── Full Disclaimer ───────────────────────────────────────────────────
+st.caption(get_disclaimer("full"))
+
 st.caption(
-        f"KSE 100 Portfolio Builder · historical data {DATA_START:%b %Y} – {DATA_END:%b %Y} (Investing.com), "
-        f"{ANNUAL_DIVIDEND_YIELD:.0%} dividend yield, {ANNUAL_FEE:.1%} fee · {tier} tier · {scenario} scenario · "
-        "Not investment advice."
-    )
+    f"KSE 100 Portfolio Builder · historical data {DATA_START:%b %Y} – {DATA_END:%b %Y} (Investing.com), "
+    f"{ANNUAL_DIVIDEND_YIELD:.0%} dividend yield, {ANNUAL_FEE:.1%} fee · {tier} tier · {scenario} scenario · "
+    "Not investment advice."
+)

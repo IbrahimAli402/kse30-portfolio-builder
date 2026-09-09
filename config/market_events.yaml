@@ -1,0 +1,74 @@
+# config/market_events.yaml
+# Major Pakistani market events that shaped KSE-100 returns.
+# Used for the event overlay on historical charts.
+
+events:
+  - date: "2008-11-24"
+    label: "IMF SBA"
+    category: "IMF"
+    description: "IMF approves $7.6B Stand-By Arrangement to stabilize reserves."
+
+  - date: "2013-05-11"
+    label: "Elections 2013"
+    category: "Political"
+    description: "PML-N wins majority. Nawaz Sharif becomes PM. Market rallies on stability hopes."
+
+  - date: "2013-09-04"
+    label: "IMF EFF"
+    category: "IMF"
+    description: "IMF approves $6.6B Extended Fund Facility. Reforms begin."
+
+  - date: "2017-07-28"
+    label: "Panama Verdict"
+    category: "Political"
+    description: "Supreme Court disqualifies Nawaz Sharif. Political uncertainty spikes."
+
+  - date: "2018-07-25"
+    label: "Elections 2018"
+    category: "Political"
+    description: "PTI wins majority. Imran Khan becomes PM. Market cautious on reform expectations."
+
+  - date: "2018-12-03"
+    label: "PKR Devaluation"
+    category: "Currency"
+    description: "PKR depreciates from 115 to 168. SBP lets market determine rate. Current account crisis."
+
+  - date: "2019-05-22"
+    label: "IMF EFF 2"
+    category: "IMF"
+    description: "IMF approves $6B Extended Fund Facility. Tough conditions on fiscal deficit."
+
+  - date: "2020-03-24"
+    label: "COVID Crash"
+    category: "Crisis"
+    description: "KSE-100 falls 30% in March. Nationwide lockdown imposed. SBP cuts rates aggressively."
+
+  - date: "2021-06-28"
+    label: "PSX Upgrade"
+    category: "Market"
+    description: "PSX upgraded to Emerging Market status by MSCI. Foreign inflows expected."
+
+  - date: "2022-04-10"
+    label: "No-Confidence"
+    category: "Political"
+    description: "Imran Khan removed as PM via no-confidence motion. Shehbaz Sharif becomes PM."
+
+  - date: "2022-08-25"
+    label: "Devastating Floods"
+    category: "Crisis"
+    description: "Historic floods cause $30B+ in damages. GDP growth impacted. Inflation surges."
+
+  - date: "2023-06-30"
+    label: "IMF SBA 2"
+    category: "IMF"
+    description: "IMF approves $3B Stand-By Arrangement. Avoids default. Market rallies 5%+ in a day."
+
+  - date: "2024-02-08"
+    label: "Elections 2024"
+    category: "Political"
+    description: "Contested elections. PML-N and PPP form coalition government. Market volatile."
+
+  - date: "2024-09-25"
+    label: "SBP Rate Cut"
+    category: "Monetary"
+    description: "SBP begins aggressive rate cutting cycle. 200bps cut in one meeting. KSE-100 surges."

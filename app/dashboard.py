@@ -645,8 +645,8 @@ with page:
     st.divider()
 
     # ---- Tabs --------------------------------------------------------------
-    tab_growth, tab_div, tab_risk, tab_worst, tab_outlook, tab_goals, tab_basket = st.tabs(
-        ["📈 Growth (Historical)", "Dividends (Historical)", "Risk (Historical)", "Worst case (Historical)", "🔮 Outlook (Forecast)", "🎯 Goals (Planner)", "🧺 Basket (KSE 30)"]
+    tab_growth, tab_div, tab_risk, tab_worst, tab_outlook, tab_goals, tab_context, tab_basket = st.tabs(
+        ["📈 Growth (Historical)", "Dividends (Historical)", "Risk (Historical)", "Worst case (Historical)", "🔮 Outlook (Forecast)", "🎯 Goals (Planner)", "📊 Market Context", "🧺 Basket (KSE 30)"]
     )
 
     with tab_growth:
@@ -698,7 +698,14 @@ with page:
             h_final, h_inv = history["Portfolio_Value"].iloc[-1], history["Cumulative_Invested"].iloc[-1]
             h_irr = sip_irr(history, monthly_amount * (1 - TX_COST_PCT)) * 100
             hx = history.reset_index()
-            chart(growth_chart(hx, tk, x_col="Date", hover_x="%b %Y", show_underwater=True), "history")
+
+            show_events = st.checkbox("Show market events on chart", value=False, key="show_events_growth")
+            fig_hist = growth_chart(hx, tk, x_col="Date", hover_x="%b %Y", show_underwater=True)
+            if show_events:
+                from kse.events import load_events, add_event_lines
+                events_df = load_events()
+                fig_hist = add_event_lines(fig_hist, events_df, tk)
+            chart(fig_hist, "history")
             c1, c2, c3 = st.columns(3)
             c1.metric("Invested", fmt_pkr(h_inv), f"{len(history)} months", delta_color="off", delta_arrow="off")
             c2.metric("Final value", fmt_pkr(h_final), f"{(h_final - h_inv) / h_inv * 100:+.0f}% on invested")
@@ -1731,6 +1738,141 @@ with page:
         year_ticks(fig_goal, list(goal_proj["Label"]))
         st.plotly_chart(fig_goal, theme=None, config=PLOTLY_CONFIG,
                         key="goal_growth_chart", use_container_width=True)
+    with tab_context:
+        st.subheader("Market context")
+        st.caption("Sector rotation and historical market events that shaped KSE-100 returns.")
+
+        # ── Market Events Timeline ─────────────────────────────────────
+        st.markdown("**Historical market events**")
+        st.caption("Major political, IMF, and monetary events overlaid on KSE-100 cumulative returns.")
+
+        try:
+            from kse.events import load_events, add_event_lines
+            events_df = load_events()
+
+            # Build cumulative return chart
+            cum_returns = (1 + TR["Total_Return"]).cumprod() * 100
+            fig_events = go.Figure()
+            fig_events.add_trace(go.Scatter(
+                x=cum_returns.index, y=cum_returns.values,
+                mode="lines", name="KSE-100",
+                line=dict(color=tk["accent"], width=2),
+                hovertemplate="%{x|%b %Y}: %{y:.1f}<extra>KSE-100</extra>",
+            ))
+            fig_events = add_event_lines(fig_events, events_df, tk)
+            fig_events.update_layout(**base_layout(tk, legend=True, height=400))
+            fig_events.update_yaxes(title_text="Growth of PKR 100")
+            fig_events.update_xaxes(dtick="M24", tickformat="%Y")
+            st.plotly_chart(fig_events, theme=None, config=PLOTLY_CONFIG,
+                            key="events_timeline", use_container_width=True)
+
+            # Events table
+            with st.expander("Event details"):
+                display_events = events_df.copy()
+                display_events["date"] = display_events["date"].dt.strftime("%b %Y")
+                display_events.columns = ["Date", "Label", "Category", "Description"]
+                st.dataframe(display_events, use_container_width=True, hide_index=True)
+        except Exception as e:
+            st.warning(f"Market events unavailable: {e}")
+
+        # ── Sector Rotation ─────────────────────────────────────────────
+        st.divider()
+        st.markdown("**Sector rotation analysis**")
+        st.caption("Which sectors are leading and lagging? Relative strength vs the KSE-100 index.")
+
+        try:
+            fd = load_frontier_data()
+            if fd is not None:
+                from kse.sector_rotation import compute_sector_rotation
+
+                rotation = compute_sector_rotation(
+                    stock_returns=fd["returns"],
+                    index_returns=TR["Total_Return"],
+                )
+
+                # Bar chart: returns by sector
+                periods = ["1M_Return", "3M_Return", "6M_Return", "12M_Return"]
+                period_labels = ["1 Month", "3 Months", "6 Months", "12 Months"]
+
+                fig_rot_bar = go.Figure()
+                for p, label in zip(periods, period_labels):
+                    if p in rotation.columns:
+                        fig_rot_bar.add_trace(go.Bar(
+                            x=rotation.index, y=rotation[p],
+                            name=label,
+                            text=rotation[p].map("{:.1%}".format),
+                            textposition="outside",
+                            textfont=dict(size=9),
+                        ))
+                fig_rot_bar.update_layout(**base_layout(tk, legend=True, height=350))
+                fig_rot_bar.update_yaxes(ticksuffix="%", title_text="Return")
+                st.plotly_chart(fig_rot_bar, theme=None, config=PLOTLY_CONFIG,
+                                key="rotation_bar", use_container_width=True)
+
+                # Scatter plot: 1M RS vs 12M RS (rotation chart)
+                if "1M_RS" in rotation.columns and "12M_RS" in rotation.columns:
+                    fig_scatter = go.Figure()
+
+                    # Add quadrant lines at 1.0
+                    fig_scatter.add_hline(y=1.0, line_dash="dash", line_color=tk["muted"], opacity=0.3)
+                    fig_scatter.add_vline(x=1.0, line_dash="dash", line_color=tk["muted"], opacity=0.3)
+
+                    # Color by momentum score
+                    colors = [tk["positive"] if s > 1 else tk["negative"] for s in rotation["Momentum_Score"]]
+
+                    fig_scatter.add_trace(go.Scatter(
+                        x=rotation["1M_RS"], y=rotation["12M_RS"],
+                        mode="markers+text",
+                        marker=dict(size=14, color=colors, line=dict(color="white", width=1)),
+                        text=rotation.index,
+                        textposition="top center",
+                        textfont=dict(size=10),
+                        name="Sectors",
+                        hovertemplate="%{text}<br>1M RS: %{x:.2f}<br>12M RS: %{y:.2f}<extra></extra>",
+                    ))
+
+                    # Quadrant annotations
+                    fig_scatter.add_annotation(x=1.3, y=1.3, text="Improving", showarrow=False,
+                                               font=dict(size=11, color=tk["positive"]))
+                    fig_scatter.add_annotation(x=0.7, y=1.3, text="Recovering", showarrow=False,
+                                               font=dict(size=11, color=tk["muted"]))
+                    fig_scatter.add_annotation(x=1.3, y=0.7, text="Weakening", showarrow=False,
+                                               font=dict(size=11, color=tk["muted"]))
+                    fig_scatter.add_annotation(x=0.7, y=0.7, text="Lagging", showarrow=False,
+                                               font=dict(size=11, color=tk["negative"]))
+
+                    fig_scatter.update_layout(**base_layout(tk, height=400, hovermode="closest"))
+                    fig_scatter.update_xaxes(title_text="1-Month Relative Strength (vs KSE-100)")
+                    fig_scatter.update_yaxes(title_text="12-Month Relative Strength (vs KSE-100)")
+                    st.plotly_chart(fig_scatter, theme=None, config=PLOTLY_CONFIG,
+                                    key="rotation_scatter", use_container_width=True)
+
+                    # Insight
+                    best_sector = rotation.index[0]
+                    worst_sector = rotation.index[-1]
+                    insight(
+                        f"**{best_sector}** is the top-performing sector with a momentum score of "
+                        f"{rotation.loc[best_sector, 'Momentum_Score']:.2f}. "
+                        f"**{worst_sector}** is the weakest with a score of "
+                        f"{rotation.loc[worst_sector, 'Momentum_Score']:.2f}. "
+                        f"Sectors in the 'Improving' quadrant (top-right) have strong short and long-term "
+                        f"momentum — they're leading the market."
+                    )
+
+                # Detailed table
+                with st.expander("Detailed sector statistics"):
+                    display_rot = rotation.copy()
+                    for col in display_rot.columns:
+                        if "RS" in col or "Score" in col:
+                            display_rot[col] = display_rot[col].round(2)
+                        elif col != "Sector":
+                            display_rot[col] = display_rot[col].map("{:.1%}".format)
+                    display_rot = display_rot.reset_index()
+                    st.dataframe(display_rot, use_container_width=True, hide_index=True)
+            else:
+                st.info("Stock data not available. Visit the Basket tab to load the frontier data.")
+        except Exception as e:
+            st.warning(f"Sector rotation unavailable: {e}")
     with tab_basket:
         st.subheader("Build a basket")
         st.caption("Replace the index with a basket you chose. See what that does to "

@@ -32,6 +32,7 @@ from kse.currency import load_fx_data, get_currency_stats, convert_returns_to_us
 from kse.benchmark import compare_to_benchmark, rolling_alpha
 from kse.compliance import get_disclaimer, get_data_provenance, get_suitability_questions, assess_suitability
 from kse.goals import required_monthly_sip, goal_probability, cost_of_delay, GOAL_TEMPLATES
+from kse.reporting import export_portfolio_csv, generate_pdf_report, has_pdf_support
 from kse.risk_metrics import (
     compute_var_cvar,
     stress_test_portfolio,
@@ -567,6 +568,7 @@ with page:
 
     # ── Disclaimer banner ──────────────────────────────────────────────
     st.warning(get_disclaimer("short"))
+    
     st.markdown(
         "A systematic-investment-plan backtest and forward-looking forecast for young Pakistani earners. "
         f"The first four tabs compute historical figures from KSE 100 total returns ({DATA_START:%b %Y} – {DATA_END:%b %Y}). "
@@ -1373,227 +1375,227 @@ with page:
             st.caption("Bear case uses nominal earnings growth directly because the "
                        "standard identity (real growth + inflation) breaks down in crisis.")
 
-        with tab_goals:
-            st.subheader("Goal-based investing planner")
-            st.caption(
-                "Define a real financial goal and see what it takes to get there. "
-                "The required monthly SIP, probability of success, and cost of delay "
-                "are computed from the building block expected returns and Monte Carlo."
+    with tab_goals:
+        st.subheader("Goal-based investing planner")
+        st.caption(
+            "Define a real financial goal and see what it takes to get there. "
+            "The required monthly SIP, probability of success, and cost of delay "
+            "are computed from the building block expected returns and Monte Carlo."
+        )
+
+        # ── Goal selection ──────────────────────────────────────────────
+        gc1, gc2 = st.columns([1, 1])
+
+        with gc1:
+            goal_type = st.selectbox(
+                "Goal type", list(GOAL_TEMPLATES.keys()),
+                format_func=lambda x: GOAL_TEMPLATES[x]["label"],
+                key="goal_type"
+            )
+            template = GOAL_TEMPLATES[goal_type]
+
+        with gc2:
+            target_amount = st.number_input(
+                "Target amount (PKR)", min_value=1_000_000, max_value=500_000_000,
+                value=template["default_target"], step=1_000_000,
+                format="%.0f", key="goal_target"
             )
 
-            # ── Goal selection ──────────────────────────────────────────────
-            gc1, gc2 = st.columns([1, 1])
+        gc3, gc4 = st.columns([1, 1])
+        with gc3:
+            goal_horizon = st.slider(
+                "Time horizon (years)", 3, 30, template["default_horizon"],
+                key="goal_horizon"
+            )
+        with gc4:
+            goal_scenario = st.segmented_control(
+                "Scenario", ["Bull", "Base", "Bear"], default="Base",
+                required=True, key="goal_scenario"
+            )
 
-            with gc1:
-                goal_type = st.selectbox(
-                    "Goal type", list(GOAL_TEMPLATES.keys()),
-                    format_func=lambda x: GOAL_TEMPLATES[x]["label"],
-                    key="goal_type"
-                )
-                template = GOAL_TEMPLATES[goal_type]
+        st.markdown(f"*{template['description']}*")
 
-            with gc2:
-                target_amount = st.number_input(
-                    "Target amount (PKR)", min_value=1_000_000, max_value=500_000_000,
-                    value=template["default_target"], step=1_000_000,
-                    format="%.0f", key="goal_target"
-                )
+        # ── Required SIP calculation ────────────────────────────────────
+        scenario_return = SCENARIOS[goal_scenario]["equity_return"]
+        sip_result = required_monthly_sip(
+            target_amount=target_amount,
+            horizon_years=goal_horizon,
+            annual_return=scenario_return,
+            annual_fee=ANNUAL_FEE,
+            tx_cost_pct=TX_COST_PCT,
+        )
 
-            gc3, gc4 = st.columns([1, 1])
-            with gc3:
-                goal_horizon = st.slider(
-                    "Time horizon (years)", 3, 30, template["default_horizon"],
-                    key="goal_horizon"
-                )
-            with gc4:
-                goal_scenario = st.segmented_control(
-                    "Scenario", ["Bull", "Base", "Bear"], default="Base",
-                    required=True, key="goal_scenario"
-                )
+        st.divider()
 
-            st.markdown(f"*{template['description']}*")
+        # ── KPI row ─────────────────────────────────────────────────────
+        gk1, gk2, gk3, gk4 = st.columns(4)
+        gk1.metric(
+            "Required monthly SIP", fmt_pkr(sip_result["monthly_sip"], 0),
+            help="The monthly investment needed to reach your target, accounting for fees and transaction costs."
+        )
+        gk2.metric(
+            "Total invested", fmt_pkr(sip_result["total_invested"], 0),
+            help="Total capital you will invest over the horizon."
+        )
+        gk3.metric(
+            "Investment growth", fmt_pkr(sip_result["total_growth"], 0),
+            help="The portion of your target that comes from investment returns, not your contributions."
+        )
+        gk4.metric(
+            "Effective return", f"{sip_result['effective_return']:.0%}",
+            help="Total return on invested capital at the end of the horizon."
+        )
 
-            # ── Required SIP calculation ────────────────────────────────────
-            scenario_return = SCENARIOS[goal_scenario]["equity_return"]
-            sip_result = required_monthly_sip(
+        insight(
+            f"To reach {fmt_pkr(target_amount, 0)} in {goal_horizon} years at a "
+            f"{scenario_return:.0%} annual return, you need to invest "
+            f"{fmt_pkr(sip_result['monthly_sip'], 0)} per month. "
+            f"Of your {fmt_pkr(target_amount, 0)} target, "
+            f"{fmt_pkr(sip_result['total_growth'], 0)} comes from investment growth "
+            f"and {fmt_pkr(sip_result['total_invested'], 0)} from your contributions."
+        )
+
+        # ── Monte Carlo probability ────────────────────────────────────
+        st.divider()
+        st.markdown("**Probability of reaching your goal**")
+        st.caption("Based on 5,000 Monte Carlo simulated paths using your scenario and tier.")
+
+        try:
+            weights_map = {"Bull": (1, 0, 0), "Base": (0, 1, 0), "Bear": (0, 0, 1)}
+            mc_weights = weights_map[goal_scenario]
+            goal_mc = run_monte_carlo_cached(
+                mc_weights, tier, sip_result["monthly_sip"],
+                goal_horizon * 12, "bootstrap", seed=42
+            )
+
+            goal_prob = goal_probability(
+                mc_terminal_values=goal_mc["terminal_values"],
                 target_amount=target_amount,
-                horizon_years=goal_horizon,
-                annual_return=scenario_return,
-                annual_fee=ANNUAL_FEE,
-                tx_cost_pct=TX_COST_PCT,
+                total_invested=sip_result["total_invested"],
             )
 
-            st.divider()
+            pc1, pc2, pc3, pc4 = st.columns(4)
+            pc1.metric(
+                "Probability of success",
+                f"{goal_prob['prob_reach_target']:.0%}",
+                help="Chance of reaching your target amount across 5,000 simulated futures."
+            )
+            pc2.metric(
+                "Median outcome", fmt_pkr(goal_prob["median_terminal"], 0),
+                help="The middle outcome — 50% of paths ended above this, 50% below."
+            )
+            pc3.metric(
+                "Worst case (P10)", fmt_pkr(goal_prob["p10_terminal"], 0),
+                help="10% of paths ended below this value."
+            )
+            pc4.metric(
+                "Best case (P90)", fmt_pkr(goal_prob["p90_terminal"], 0),
+                help="10% of paths ended above this value."
+            )
 
-            # ── KPI row ─────────────────────────────────────────────────────
-            gk1, gk2, gk3, gk4 = st.columns(4)
-            gk1.metric(
-                "Required monthly SIP", fmt_pkr(sip_result["monthly_sip"], 0),
-                help="The monthly investment needed to reach your target, accounting for fees and transaction costs."
-            )
-            gk2.metric(
-                "Total invested", fmt_pkr(sip_result["total_invested"], 0),
-                help="Total capital you will invest over the horizon."
-            )
-            gk3.metric(
-                "Investment growth", fmt_pkr(sip_result["total_growth"], 0),
-                help="The portion of your target that comes from investment returns, not your contributions."
-            )
-            gk4.metric(
-                "Effective return", f"{sip_result['effective_return']:.0%}",
-                help="Total return on invested capital at the end of the horizon."
-            )
+            # Probability bar chart
+            prob_labels = ["Reach target", "Above 1.5x invested", "Above 2x invested", "Break even"]
+            prob_values = [
+                goal_prob["prob_reach_target"],
+                goal_prob["prob_above_1_5x"],
+                goal_prob["prob_above_2x"],
+                goal_prob["prob_reach_invested"],
+            ]
+
+            fig_goal_prob = go.Figure(go.Bar(
+                x=prob_values, y=prob_labels, orientation="h",
+                text=[f"{p:.0%}" for p in prob_values], textposition="outside",
+                marker_color=[tk["positive"] if p > 0.5 else tk["negative"] for p in prob_values],
+            ))
+            fig_goal_prob.update_layout(**base_layout(tk, height=300, hovermode="closest"))
+            fig_goal_prob.update_xaxes(range=[0, 1.15], ticksuffix="%", dtick=20)
+            st.plotly_chart(fig_goal_prob, theme=None, config=PLOTLY_CONFIG,
+                            key="goal_prob_chart", use_container_width=True)
+
+            if goal_prob["prob_reach_target"] >= 0.7:
+                goal_msg = "strong odds of success"
+            elif goal_prob["prob_reach_target"] >= 0.5:
+                goal_msg = "a coin-flip chance — consider increasing your SIP or extending your horizon"
+            else:
+                goal_msg = "low odds — you may need to increase contributions, extend the horizon, or adjust expectations"
 
             insight(
-                f"To reach {fmt_pkr(target_amount, 0)} in {goal_horizon} years at a "
-                f"{scenario_return:.0%} annual return, you need to invest "
-                f"{fmt_pkr(sip_result['monthly_sip'], 0)} per month. "
-                f"Of your {fmt_pkr(target_amount, 0)} target, "
-                f"{fmt_pkr(sip_result['total_growth'], 0)} comes from investment growth "
-                f"and {fmt_pkr(sip_result['total_invested'], 0)} from your contributions."
+                f"You have a **{goal_prob['prob_reach_target']:.0%}** chance of reaching "
+                f"{fmt_pkr(target_amount, 0)} with {fmt_pkr(sip_result['monthly_sip'], 0)}/month "
+                f"over {goal_horizon} years ({goal_msg}). The median outcome is "
+                f"{fmt_pkr(goal_prob['median_terminal'], 0)}. If you fall short, the median "
+                f"shortfall is {fmt_pkr(goal_prob['shortfall_p50'], 0)}."
             )
+        except Exception as e:
+            st.warning(f"Probability calculation unavailable: {e}")
 
-            # ── Monte Carlo probability ────────────────────────────────────
-            st.divider()
-            st.markdown("**Probability of reaching your goal**")
-            st.caption("Based on 5,000 Monte Carlo simulated paths using your scenario and tier.")
+        # ── Cost of delay ───────────────────────────────────────────────
+        st.divider()
+        st.markdown("**Cost of delay**")
+        st.caption("What happens if you wait 5 years to start? Same target, less time.")
 
-            try:
-                weights_map = {"Bull": (1, 0, 0), "Base": (0, 1, 0), "Bear": (0, 0, 1)}
-                mc_weights = weights_map[goal_scenario]
-                goal_mc = run_monte_carlo_cached(
-                    mc_weights, tier, sip_result["monthly_sip"],
-                    goal_horizon * 12, "bootstrap", seed=42
-                )
+        delay = cost_of_delay(
+            target_amount=target_amount,
+            horizon_years=goal_horizon,
+            annual_return=scenario_return,
+            delay_years=5,
+            annual_fee=ANNUAL_FEE,
+            tx_cost_pct=TX_COST_PCT,
+        )
 
-                goal_prob = goal_probability(
-                    mc_terminal_values=goal_mc["terminal_values"],
-                    target_amount=target_amount,
-                    total_invested=sip_result["total_invested"],
-                )
+        dc1, dc2, dc3, dc4 = st.columns(4)
+        dc1.metric("Start now", fmt_pkr(delay["original_sip"], 0),
+                f"{goal_horizon} years", delta_color="off", delta_arrow="off")
+        dc2.metric("Wait 5 years", fmt_pkr(delay["delayed_sip"], 0),
+                f"{delay['delayed_horizon']} years", delta_color="off", delta_arrow="off")
+        dc3.metric("Extra per month", fmt_pkr(delay["sip_increase"], 0),
+                f"{delay['sip_increase_pct']:+.0%} more", delta_color="inverse")
+        dc4.metric("Extra invested", fmt_pkr(delay["extra_invested"], 0),
+                help="Additional capital you'd need to invest over the shorter horizon.",
+                delta_color="inverse")
 
-                pc1, pc2, pc3, pc4 = st.columns(4)
-                pc1.metric(
-                    "Probability of success",
-                    f"{goal_prob['prob_reach_target']:.0%}",
-                    help="Chance of reaching your target amount across 5,000 simulated futures."
-                )
-                pc2.metric(
-                    "Median outcome", fmt_pkr(goal_prob["median_terminal"], 0),
-                    help="The middle outcome — 50% of paths ended above this, 50% below."
-                )
-                pc3.metric(
-                    "Worst case (P10)", fmt_pkr(goal_prob["p10_terminal"], 0),
-                    help="10% of paths ended below this value."
-                )
-                pc4.metric(
-                    "Best case (P90)", fmt_pkr(goal_prob["p90_terminal"], 0),
-                    help="10% of paths ended above this value."
-                )
+        insight(
+            f"If you start now, you invest {fmt_pkr(delay['original_sip'], 0)}/month for "
+            f"{goal_horizon} years. If you wait 5 years, you'd need to invest "
+            f"{fmt_pkr(delay['delayed_sip'], 0)}/month for {delay['delayed_horizon']} years — "
+            f"an increase of {fmt_pkr(delay['sip_increase'], 0)}/month "
+            f"({delay['sip_increase_pct']:.0%} more) and {fmt_pkr(delay['extra_invested'], 0)} "
+            f"more in total capital. Compounding rewards early starters."
+        )
 
-                # Probability bar chart
-                prob_labels = ["Reach target", "Above 1.5x invested", "Above 2x invested", "Break even"]
-                prob_values = [
-                    goal_prob["prob_reach_target"],
-                    goal_prob["prob_above_1_5x"],
-                    goal_prob["prob_above_2x"],
-                    goal_prob["prob_reach_invested"],
-                ]
+        # ── Growth projection chart ─────────────────────────────────────
+        st.divider()
+        st.markdown("**Growth projection to your goal**")
+        st.caption(f"Projected portfolio value vs your target of {fmt_pkr(target_amount, 0)}.")
 
-                fig_goal_prob = go.Figure(go.Bar(
-                    x=prob_values, y=prob_labels, orientation="h",
-                    text=[f"{p:.0%}" for p in prob_values], textposition="outside",
-                    marker_color=[tk["positive"] if p > 0.5 else tk["negative"] for p in prob_values],
-                ))
-                fig_goal_prob.update_layout(**base_layout(tk, height=300, hovermode="closest"))
-                fig_goal_prob.update_xaxes(range=[0, 1.15], ticksuffix="%", dtick=20)
-                st.plotly_chart(fig_goal_prob, theme=None, config=PLOTLY_CONFIG,
-                                key="goal_prob_chart", use_container_width=True)
+        # Build projection using the SIP engine
+        goal_proj, goal_stats = project_sip(
+            sip_result["monthly_sip"], tier, goal_scenario, goal_horizon
+        )
 
-                if goal_prob["prob_reach_target"] >= 0.7:
-                    goal_msg = "strong odds of success"
-                elif goal_prob["prob_reach_target"] >= 0.5:
-                    goal_msg = "a coin-flip chance — consider increasing your SIP or extending your horizon"
-                else:
-                    goal_msg = "low odds — you may need to increase contributions, extend the horizon, or adjust expectations"
-
-                insight(
-                    f"You have a **{goal_prob['prob_reach_target']:.0%}** chance of reaching "
-                    f"{fmt_pkr(target_amount, 0)} with {fmt_pkr(sip_result['monthly_sip'], 0)}/month "
-                    f"over {goal_horizon} years ({goal_msg}). The median outcome is "
-                    f"{fmt_pkr(goal_prob['median_terminal'], 0)}. If you fall short, the median "
-                    f"shortfall is {fmt_pkr(goal_prob['shortfall_p50'], 0)}."
-                )
-            except Exception as e:
-                st.warning(f"Probability calculation unavailable: {e}")
-
-            # ── Cost of delay ───────────────────────────────────────────────
-            st.divider()
-            st.markdown("**Cost of delay**")
-            st.caption("What happens if you wait 5 years to start? Same target, less time.")
-
-            delay = cost_of_delay(
-                target_amount=target_amount,
-                horizon_years=goal_horizon,
-                annual_return=scenario_return,
-                delay_years=5,
-                annual_fee=ANNUAL_FEE,
-                tx_cost_pct=TX_COST_PCT,
-            )
-
-            dc1, dc2, dc3, dc4 = st.columns(4)
-            dc1.metric("Start now", fmt_pkr(delay["original_sip"], 0),
-                    f"{goal_horizon} years", delta_color="off", delta_arrow="off")
-            dc2.metric("Wait 5 years", fmt_pkr(delay["delayed_sip"], 0),
-                    f"{delay['delayed_horizon']} years", delta_color="off", delta_arrow="off")
-            dc3.metric("Extra per month", fmt_pkr(delay["sip_increase"], 0),
-                    f"{delay['sip_increase_pct']:+.0%} more", delta_color="inverse")
-            dc4.metric("Extra invested", fmt_pkr(delay["extra_invested"], 0),
-                    help="Additional capital you'd need to invest over the shorter horizon.",
-                    delta_color="inverse")
-
-            insight(
-                f"If you start now, you invest {fmt_pkr(delay['original_sip'], 0)}/month for "
-                f"{goal_horizon} years. If you wait 5 years, you'd need to invest "
-                f"{fmt_pkr(delay['delayed_sip'], 0)}/month for {delay['delayed_horizon']} years — "
-                f"an increase of {fmt_pkr(delay['sip_increase'], 0)}/month "
-                f"({delay['sip_increase_pct']:.0%} more) and {fmt_pkr(delay['extra_invested'], 0)} "
-                f"more in total capital. Compounding rewards early starters."
-            )
-
-            # ── Growth projection chart ─────────────────────────────────────
-            st.divider()
-            st.markdown("**Growth projection to your goal**")
-            st.caption(f"Projected portfolio value vs your target of {fmt_pkr(target_amount, 0)}.")
-
-            # Build projection using the SIP engine
-            goal_proj, goal_stats = project_sip(
-                sip_result["monthly_sip"], tier, goal_scenario, goal_horizon
-            )
-
-            fig_goal = go.Figure()
-            fig_goal.add_trace(go.Scatter(
-                x=goal_proj["Label"], y=goal_proj["Portfolio_Value"],
-                mode="lines", name="Projected portfolio",
-                line=dict(color=tk["accent"], width=2.5),
-                hovertemplate="%{x}: %{customdata}<extra>Portfolio</extra>",
-                customdata=[fmt_pkr(v) for v in goal_proj["Portfolio_Value"]],
-            ))
-            fig_goal.add_trace(go.Scatter(
-                x=goal_proj["Label"], y=goal_proj["Cumulative_Invested"],
-                mode="lines", name="Invested",
-                line=dict(color=tk["invested"], width=1.5, dash="4px,4px"),
-                hovertemplate="%{x}: %{customdata}<extra>Invested</extra>",
-                customdata=[fmt_pkr(v) for v in goal_proj["Cumulative_Invested"]],
-            ))
-            fig_goal.add_hline(y=target_amount, line_dash="dash", line_color=tk["positive"],
-                            annotation_text=f"Goal: {fmt_pkr(target_amount, 0)}")
-            fig_goal.update_layout(**base_layout(tk, legend=True, height=350))
-            money_axis(fig_goal, max(goal_proj["Portfolio_Value"].max(), target_amount))
-            year_ticks(fig_goal, list(goal_proj["Label"]))
-            st.plotly_chart(fig_goal, theme=None, config=PLOTLY_CONFIG,
-                            key="goal_growth_chart", use_container_width=True)
-with tab_basket:
+        fig_goal = go.Figure()
+        fig_goal.add_trace(go.Scatter(
+            x=goal_proj["Label"], y=goal_proj["Portfolio_Value"],
+            mode="lines", name="Projected portfolio",
+            line=dict(color=tk["accent"], width=2.5),
+            hovertemplate="%{x}: %{customdata}<extra>Portfolio</extra>",
+            customdata=[fmt_pkr(v) for v in goal_proj["Portfolio_Value"]],
+        ))
+        fig_goal.add_trace(go.Scatter(
+            x=goal_proj["Label"], y=goal_proj["Cumulative_Invested"],
+            mode="lines", name="Invested",
+            line=dict(color=tk["invested"], width=1.5, dash="4px,4px"),
+            hovertemplate="%{x}: %{customdata}<extra>Invested</extra>",
+            customdata=[fmt_pkr(v) for v in goal_proj["Cumulative_Invested"]],
+        ))
+        fig_goal.add_hline(y=target_amount, line_dash="dash", line_color=tk["positive"],
+                        annotation_text=f"Goal: {fmt_pkr(target_amount, 0)}")
+        fig_goal.update_layout(**base_layout(tk, legend=True, height=350))
+        money_axis(fig_goal, max(goal_proj["Portfolio_Value"].max(), target_amount))
+        year_ticks(fig_goal, list(goal_proj["Label"]))
+        st.plotly_chart(fig_goal, theme=None, config=PLOTLY_CONFIG,
+                        key="goal_growth_chart", use_container_width=True)
+    with tab_basket:
         st.subheader("Build a basket")
         st.caption("Replace the index with a basket you chose. See what that does to "
                    "return, drawdown and dividend income. Analysis tool, not a "
@@ -1720,6 +1722,25 @@ with tab_basket:
 
                 st.dataframe(pd.DataFrame(basket_data), use_container_width=True,
                              hide_index=True)
+                
+                # ── CSV Export ─────────────────────────────────────────
+                csv_df = export_portfolio_csv(
+                    tickers=selected,
+                    weights=weights_basket,
+                    prices={t: stock_df[stock_df["ticker"] == t]["price"].iloc[0]
+                            for t in selected},
+                    monthly_amount=monthly_amount,
+                    names={t: stock_df[stock_df["ticker"] == t]["name"].iloc[0]
+                           for t in selected},
+                    sectors={t: stock_df[stock_df["ticker"] == t]["sector"].iloc[0]
+                             for t in selected},
+                )
+                st.download_button(
+                    label="📥 Download basket as CSV",
+                    data=csv_df.to_csv(index=False).encode("utf-8"),
+                    file_name="kse100_basket.csv",
+                    mime="text/csv",
+                )
 
                 # ── Basket statistics ──────────────────────────────────────
                 # Calculate weighted averages, handling missing values
@@ -2202,6 +2223,25 @@ with tab_basket:
             st.write("This usually means `stock_metrics.csv` is missing or has an issue.")
             st.write("Run: `python scripts/fetch_stocks.py` to regenerate the data.")
 
+    # ── PDF Export ─────────────────────────────────────────────────────
+    st.divider()
+    if has_pdf_support():
+        pdf_bytes = generate_pdf_report(
+            monthly_amount=monthly_amount,
+            tier=tier,
+            scenario=scenario,
+            horizon=horizon,
+            proj_stats=stats,
+            mc_result=mc_result if 'mc_result' in locals() else None,
+        )
+        st.download_button(
+            label="📄 Download PDF report",
+            data=pdf_bytes,
+            file_name=f"kse100_report_{tier}_{scenario}_{horizon}y.pdf",
+            mime="application/pdf",
+        )
+    else:
+        st.info("Install reportlab to enable PDF export: `pip install reportlab`")
 
 st.space("large")
 

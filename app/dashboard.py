@@ -33,6 +33,9 @@ from kse.benchmark import compare_to_benchmark, rolling_alpha
 from kse.compliance import get_disclaimer, get_data_provenance, get_suitability_questions, assess_suitability
 from kse.goals import required_monthly_sip, goal_probability, cost_of_delay, GOAL_TEMPLATES
 from kse.reporting import export_portfolio_csv, generate_pdf_report, has_pdf_support
+from kse.multi_asset import compare_assets, load_gold_data
+from kse.drip import drip_comparison
+from kse.rebalance import analyze_drift, rebalancing_cost
 from kse.risk_metrics import (
     compute_var_cvar,
     stress_test_portfolio,
@@ -735,6 +738,75 @@ with page:
             mt[c] = mt[c].map(fmt_pkr)
         mt.columns = ["Milestone", "Portfolio value", "Annual dividend", "Monthly dividend"]
         table_view(mt)
+        
+        # ── DRIP Analysis ───────────────────────────────────────────────
+        st.divider()
+        st.subheader("Dividend reinvestment (DRIP) vs cash")
+        st.caption(
+            f"If you reinvest dividends instead of taking them as cash, "
+            f"compounding accelerates. Based on {ANNUAL_DIVIDEND_YIELD:.0%} yield "
+            f"and {scenario} scenario return."
+        )
+
+        try:
+            drip = drip_comparison(
+                monthly_amount=monthly_amount,
+                annual_return=SCENARIOS[scenario]["equity_return"],
+                annual_dividend_yield=ANNUAL_DIVIDEND_YIELD,
+                annual_fee=ANNUAL_FEE,
+                tx_cost_pct=TX_COST_PCT,
+                horizon_years=horizon,
+            )
+
+            dc1, dc2, dc3, dc4 = st.columns(4)
+            dc1.metric("Cash dividends (total)", fmt_pkr(drip["cash_dividends_total"], 0),
+                       help="Total dividends received if taken as cash over the full horizon.",
+                       delta_color="off", delta_arrow="off")
+            dc2.metric("Portfolio (cash div)", fmt_pkr(drip["cash_terminal"], 0),
+                       help="Portfolio value if dividends were taken as cash (capital growth only).",
+                       delta_color="off", delta_arrow="off")
+            dc3.metric("Portfolio (DRIP)", fmt_pkr(drip["drip_terminal"], 0),
+                       help="Portfolio value if all dividends were reinvested.",
+                       delta_color="off", delta_arrow="off")
+            dc4.metric("DRIP advantage", fmt_pkr(drip["drip_advantage"], 0),
+                       f"{drip['drip_advantage_pct']:.0%} more",
+                       delta_color="normal")
+
+            # Growth comparison chart
+            ydf = drip["yearly_comparison"]
+            fig_drip = go.Figure()
+            fig_drip.add_trace(go.Scatter(
+                x=ydf["Year"], y=ydf["Cash_Portfolio"],
+                mode="lines+markers", name="Cash dividends",
+                line=dict(color=tk["invested"], width=2),
+                hovertemplate="Year %{x}: %{customdata}<extra>Cash</extra>",
+                customdata=[fmt_pkr(v) for v in ydf["Cash_Portfolio"]],
+            ))
+            fig_drip.add_trace(go.Scatter(
+                x=ydf["Year"], y=ydf["DRIP_Portfolio"],
+                mode="lines+markers", name="DRIP (reinvested)",
+                line=dict(color=tk["accent"], width=2.5),
+                hovertemplate="Year %{x}: %{customdata}<extra>DRIP</extra>",
+                customdata=[fmt_pkr(v) for v in ydf["DRIP_Portfolio"]],
+            ))
+            fig_drip.update_layout(**base_layout(tk, legend=True, height=350))
+            fig_drip.update_xaxes(title_text="Year", dtick=1)
+            money_axis(fig_drip, max(ydf["DRIP_Portfolio"].max(), ydf["Cash_Portfolio"].max()))
+            st.plotly_chart(fig_drip, theme=None, config=PLOTLY_CONFIG,
+                            key="drip_chart", use_container_width=True)
+
+            insight(
+                f"Reinvesting dividends grows your portfolio to "
+                f"{fmt_pkr(drip['drip_terminal'], 0)} vs "
+                f"{fmt_pkr(drip['cash_terminal'], 0)} if you took dividends as cash — "
+                f"a {drip['drip_advantage_pct']:.0%} advantage from compounding. "
+                f"Over {horizon} years, you'd have received "
+                f"{fmt_pkr(drip['cash_dividends_total'], 0)} in cash dividends, "
+                f"but reinvesting them turns that income into "
+                f"{fmt_pkr(drip['drip_advantage'], 0)} of additional portfolio value."
+            )
+        except Exception as e:
+            st.warning(f"DRIP analysis unavailable: {e}")
 
     with tab_risk:
         st.subheader("Probability of losing money by holding period")
@@ -1028,6 +1100,69 @@ with page:
                 st.info("USD/PKR data not loaded. Run: `python scripts/fetch_fx.py`")
         except Exception as e:
             st.warning(f"Currency analysis unavailable: {e}")
+            
+        # ── Multi-Asset Comparison ─────────────────────────────────────
+        st.divider()
+        st.subheader("Multi-asset comparison")
+        st.caption(
+            "How KSE-100 compares to gold, USD, and real estate. "
+            "Contextualizes equity allocation: is the risk worth it?"
+        )
+
+        try:
+            gold_data = load_gold_data()
+            asset_df = compare_assets(
+                kse_returns=TR["Total_Return"],
+                usd_pkr_data=FX_DATA,
+                gold_data=gold_data,
+            )
+
+            # Display comparison table
+            display_df = asset_df.copy()
+            display_df["Annual_Return"] = display_df["Annual_Return"].map("{:.1%}".format)
+            display_df["Volatility"] = display_df["Volatility"].map("{:.1%}".format)
+            display_df["Sharpe"] = display_df["Sharpe"].map("{:.2f}".format)
+            display_df["Max_Drawdown"] = display_df["Max_Drawdown"].map("{:.1%}".format)
+            display_df["Cumulative_Return"] = display_df["Cumulative_Return"].apply(
+                lambda x: f"{x:.1%}" if pd.notna(x) else "N/A"
+            )
+            display_df.columns = ["Asset", "Annual Return", "Volatility", "Sharpe", "Max Drawdown", "Cumulative Return"]
+            st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+            # Bar chart: annual return vs volatility
+            fig_asset = go.Figure()
+            fig_asset.add_trace(go.Bar(
+                x=asset_df["Asset"], y=asset_df["Annual_Return"],
+                name="Annual Return", marker_color=tk["accent"],
+                text=asset_df["Annual_Return"].map("{:.1%}".format),
+                textposition="outside",
+            ))
+            fig_asset.add_trace(go.Bar(
+                x=asset_df["Asset"], y=asset_df["Volatility"],
+                name="Volatility", marker_color=tk["bear"],
+                text=asset_df["Volatility"].map("{:.1%}".format),
+                textposition="outside",
+            ))
+            fig_asset.update_layout(**base_layout(tk, legend=True, height=350))
+            fig_asset.update_yaxes(ticksuffix="%", title_text="Rate")
+            st.plotly_chart(fig_asset, theme=None, config=PLOTLY_CONFIG,
+                            key="multi_asset_chart", use_container_width=True)
+
+            # Insight
+            kse_row = asset_df[asset_df["Asset"] == "KSE-100 (PKR)"].iloc[0]
+            best_sharpe = asset_df.loc[asset_df["Sharpe"].idxmax()]
+            insight(
+                f"KSE-100 returned {kse_row['Annual_Return']:.1%} annually in PKR terms "
+                f"with {kse_row['Volatility']:.1%} volatility. "
+                f"The best risk-adjusted return (Sharpe {best_sharpe['Sharpe']:.2f}) "
+                f"comes from {best_sharpe['Asset']}. "
+                f"Gold and USD offer diversification benefits — they tend to hold value "
+                f"or rally when PKR depreciates or equities crash."
+            )
+        except FileNotFoundError:
+            st.info("Gold data not loaded. Run: `python scripts/fetch_multi_asset.py`")
+        except Exception as e:
+            st.warning(f"Multi-asset comparison unavailable: {e}")
     with tab_worst:
         st.subheader("The worst time to start")
         st.caption(f"A SIP begun at the {tr_episode['peak']:%B %Y} market peak — right before the "
@@ -1796,6 +1931,78 @@ with page:
                     f"{s} {w:.0%}" for s, w in sorted(sector_weights.items(),
                                                        key=lambda x: -x[1])
                 ))
+                                # ── Rebalancing Guidance ───────────────────────────────────
+                st.divider()
+                st.markdown("**Rebalancing guidance**")
+                st.caption("How far has your basket drifted from target weights? "
+                           "When should you rebalance, and what does it cost?")
+
+                try:
+                    # Use current weights as "target", simulate drift
+                    # In a real app, target = original allocation, current = drifted
+                    # Here we show the framework with equal-weight as target
+                    target_w = {t: 1.0 / len(selected) for t in selected}
+                    current_w = weights_basket
+
+                    drift = analyze_drift(target_w, current_w, threshold=0.05)
+
+                    dc1, dc2, dc3 = st.columns(3)
+                    dc1.metric("Max drift", f"{drift['max_drift']:+.1%}",
+                               drift["max_drift_ticker"],
+                               delta_color="inverse" if abs(drift["max_drift"]) > 0.05 else "off",
+                               delta_arrow="off")
+                    dc2.metric("Positions breached", drift["n_breached"],
+                               f"of {len(selected)}",
+                               delta_color="off", delta_arrow="off")
+                    dc3.metric("Action needed",
+                               "⚠️ Rebalance" if drift["needs_rebalance"] else "✅ Hold",
+                               delta_color="off", delta_arrow="off")
+
+                    # Drift table
+                    drift_df = drift["drift_table"].copy()
+                    drift_df["Target"] = drift_df["Target"].map("{:.1%}".format)
+                    drift_df["Current"] = drift_df["Current"].map("{:.1%}".format)
+                    drift_df["Drift"] = drift_df["Drift"].map("{:+.1%}".format)
+                    drift_df["Abs_Drift"] = drift_df["Abs_Drift"].map("{:.1%}".format)
+                    drift_df = drift_df[["Ticker", "Target", "Current", "Drift", "Abs_Drift", "Breached"]]
+                    st.dataframe(drift_df, use_container_width=True, hide_index=True)
+
+                    # Rebalancing cost estimate
+                    portfolio_val = monthly_amount * 12 * horizon  # rough estimate
+                    cost = rebalancing_cost(
+                        target_weights=target_w,
+                        current_weights=current_w,
+                        portfolio_value=portfolio_val,
+                        tx_cost_pct=TX_COST_PCT,
+                        cgt_rate=CGT_BRACKETS["short"],
+                    )
+
+                    rc1, rc2, rc3, rc4 = st.columns(4)
+                    rc1.metric("Turnover", fmt_pkr(cost["total_turnover"], 0),
+                               delta_color="off", delta_arrow="off")
+                    rc2.metric("Transaction cost", fmt_pkr(cost["tx_cost"], 0),
+                               f"{TX_COST_PCT:.1%} of turnover",
+                               delta_color="off", delta_arrow="off")
+                    rc3.metric("Tax cost", fmt_pkr(cost["cgt_cost"], 0),
+                               f"at {CGT_BRACKETS['short']:.0%} CGT",
+                               delta_color="off", delta_arrow="off")
+                    rc4.metric("Total cost", fmt_pkr(cost["total_cost"], 0),
+                               f"{cost['total_cost_pct']:.2%} of portfolio",
+                               delta_color="inverse")
+
+                    if drift["needs_rebalance"]:
+                        st.warning(
+                            f"**Rebalancing recommended:** {drift['n_breached']} position(s) "
+                            f"have drifted more than 5% from target. Estimated cost: "
+                            f"{fmt_pkr(cost['total_cost'], 0)} "
+                            f"({cost['total_cost_pct']:.2%} of portfolio). "
+                            f"In Pakistan, selling within 12 months triggers "
+                            f"{CGT_BRACKETS['short']:.0%} CGT — consider tax-aware rebalancing."
+                        )
+                    else:
+                        st.caption("All positions within 5% drift threshold. No rebalancing needed yet.")
+                except Exception as e:
+                    st.warning(f"Rebalancing analysis unavailable: {e}")
 
                 # ── Screen scores ──────────────────────────────────────────
                 with st.expander("Stock screen scores (5-pillar)"):

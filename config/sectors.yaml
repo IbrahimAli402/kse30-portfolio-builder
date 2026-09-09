@@ -1,0 +1,60 @@
+# config/sectors.yaml
+# KSE-30 sector mapping — adjust tickers to match your stock_metrics.csv
+sectors:
+  # ── Commercial Banks ──
+  HBL: Commercial Banks
+  UBL: Commercial Banks
+  MCB: Commercial Banks
+  ABL: Commercial Banks
+  BAFL: Commercial Banks
+  MEBL: Commercial Banks
+  BAIC: Commercial Banks
+
+  # ── Oil & Gas ──
+  OGDC: Oil & Gas
+  PPL: Oil & Gas
+  POL: Oil & Gas
+  PSO: Oil & Gas
+  APL: Oil & Gas
+  SNGP: Oil & Gas
+  SSGC: Oil & Gas
+
+  # ── Cement ──
+  LUCK: Cement
+  DGKC: Cement
+  MLCF: Cement
+  FCCL: Cement
+  KOHC: Cement
+  CHCC: Cement
+
+  # ── Fertilizer ──
+  ENGRO: Fertilizer
+  FFC: Fertilizer
+  FATIMA: Fertilizer
+  EFERT: Fertilizer
+
+  # ── Power Generation ──
+  HUBC: Power Generation
+  KAPCO: Power Generation
+  NPL: Power Generation
+  NCPL: Power Generation
+
+  # ── Technology & Communication ──
+  TRG: Technology
+  SYS: Technology
+
+  # ── Automobile Assembler ──
+  INDU: Automobile
+  PSMC: Automobile
+  HCAR: Automobile
+
+  # ── Pharmaceuticals ──
+  GLAXO: Pharmaceuticals
+
+  # ── Food & Personal Care ──
+  NESTLE: Food & Personal Care
+  RMPL: Food & Personal Care
+
+  # ── Chemicals ──
+  LOTCHEM: Chemicals
+  EPCL: Chemicals

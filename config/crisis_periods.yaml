@@ -1,0 +1,34 @@
+# config/crisis_periods.yaml
+# Historical crisis periods for stress testing — KSE-100 specific
+crises:
+  GFC_2008:
+    label: "Global Financial Crisis (2008)"
+    start: "2008-01-01"
+    end: "2009-03-31"
+    description: >
+      KSE-100 peaked in April 2008 at ~15,700 and lost ~60% by January 2009.
+      Triggered by global credit freeze; Pakistan also faced IMF bailout.
+
+  PKR_Crisis_2018:
+    label: "PKR Devaluation Crisis (2018-2019)"
+    start: "2018-05-01"
+    end: "2019-08-31"
+    description: >
+      PKR depreciated from 115 to 168 against USD. Political instability
+      following elections. KSE-100 fell from 43,000 to 31,000.
+
+  COVID_Crash_2020:
+    label: "COVID-19 Crash (Mar 2020)"
+    start: "2020-02-01"
+    end: "2020-04-30"
+    description: >
+      Fastest 30% drawdown in KSE history. KSE-100 fell from 41,000 to 27,000
+      in March 2020, followed by V-shaped recovery.
+
+  IMF_Crisis_2022:
+    label: "IMF & Political Crisis (2022-2023)"
+    start: "2022-04-01"
+    end: "2023-06-30"
+    description: >
+      Political turmoil after no-confidence motion, IMF program uncertainty,
+      and devastating floods. KSE-100 ranged 40,000–47,000 with high volatility.

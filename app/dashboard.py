@@ -28,6 +28,12 @@ from kse.scenarios import get_all_scenarios, DEFAULT_WEIGHTS, blend_scenarios
 from kse.blocks import expected_return, calculate_all_expected_returns
 from kse.screen import screen_all
 from kse.data_pipeline import load_stock_metrics, load_kse30_constituents, check_data_freshness
+from kse.risk_metrics import (
+    compute_var_cvar,
+    stress_test_portfolio,
+    sector_concentration,
+    correlation_regime_analysis,
+)
 
 # ---------------------------------------------------------------------------
 # Page
@@ -667,6 +673,223 @@ with page:
         dt = pd.DataFrame({"Month": episode["series"].index.strftime("%b %Y"),
                            "Drawdown (%)": (episode["series"] * 100).round(1).values})
         table_view(dt)
+                # ═══ Phase 3A: Advanced Risk Metrics ═════════════════════════════
+        st.divider()
+
+        # ── VaR & CVaR ──────────────────────────────────────────────────
+        st.subheader("Value at Risk (VaR) & Conditional VaR (CVaR)")
+        st.caption(
+            f"VaR: the most you could lose in a bad month. "
+            f"CVaR: the average loss if you're in that bad scenario. "
+            f"· {tier} tier · {DATA_START:%b %Y} – {DATA_END:%b %Y}"
+        )
+
+        try:
+            var_results = compute_var_cvar(tier_rets, confidence_levels=[0.95, 0.99])
+
+            var_rows = []
+            for cl, data in var_results.items():
+                var_rows.append({
+                    "Confidence": f"{cl:.0%}",
+                    "VaR (historical)": f"{data['var_historical']:.2%}",
+                    "CVaR (historical)": f"{data['cvar_historical']:.2%}",
+                    "VaR (parametric)": f"{data['var_parametric']:.2%}",
+                    "CVaR (parametric)": f"{data['cvar_parametric']:.2%}",
+                })
+            st.dataframe(pd.DataFrame(var_rows), use_container_width=True, hide_index=True)
+
+            v95 = var_results[0.95]
+            insight(
+                f"At 95% confidence, the {tier} tier's historical VaR is "
+                f"{v95['var_historical']:.2%} — in the worst 5% of months, you would "
+                f"have lost at least that much. CVaR of {v95['cvar_historical']:.2%} "
+                f"means if you were in that worst 5%, the average loss was even deeper. "
+                f"CVaR is always worse than VaR because it captures tail severity, not "
+                f"just the threshold."
+            )
+        except Exception as e:
+            st.warning(f"VaR/CVaR unavailable: {e}")
+
+        # ── Stress Testing ──────────────────────────────────────────────
+        st.divider()
+        st.subheader("Stress testing — historical crisis replay")
+        st.caption(
+            "How the KSE 100 performed during major Pakistani market crises. "
+            "Portfolio-specific stress tests appear when you build a basket in the Basket tab."
+        )
+
+        try:
+            # Use index returns as a single-asset "portfolio" for index-level stress test
+            index_df = TR[["Total_Return"]].rename(columns={"Total_Return": "KSE100"})
+            index_weights = pd.Series({"KSE100": 1.0})
+
+            stress = stress_test_portfolio(
+                stock_returns=index_df,
+                weights=index_weights,
+                index_returns=TR["Total_Return"],
+            )
+
+            stress_rows = []
+            for name, result in stress.items():
+                if "error" in result:
+                    stress_rows.append({
+                        "Crisis": result.get("label", name),
+                        "Status": result["error"],
+                    })
+                    continue
+                stress_rows.append({
+                    "Crisis": result["label"],
+                    "Months": result["n_months"],
+                    "Return": f"{result['portfolio_return']:.1%}",
+                    "Max drawdown": f"{result['portfolio_drawdown']:.1%}",
+                    "Recovery": f"{result['recovery_months']} mo" if result["recovery_months"] else "Not recovered",
+                })
+
+            st.dataframe(pd.DataFrame(stress_rows), use_container_width=True, hide_index=True)
+
+            # Detail chart for selected crisis
+            crisis_names = [n for n, r in stress.items() if "error" not in r]
+            if crisis_names:
+                selected_crisis = st.selectbox(
+                    "Inspect a crisis in detail:", crisis_names,
+                    key="stress_crisis_detail"
+                )
+                detail = stress[selected_crisis]
+
+                st.markdown(f"*{detail['description']}*")
+
+                fig_stress = go.Figure()
+                wealth = (1 + detail["monthly_returns"]).cumprod() * 100
+                fig_stress.add_trace(go.Scatter(
+                    x=wealth.index, y=wealth,
+                    mode="lines+markers",
+                    name="KSE 100 (indexed to 100)",
+                    line=dict(color=tk["accent"], width=2),
+                    hovertemplate="%{x|%b %Y}: %{y:.1f}<extra></extra>",
+                ))
+                fig_stress.update_layout(**base_layout(tk, height=300))
+                fig_stress.update_yaxes(title_text="Value (indexed to 100)")
+                fig_stress.update_xaxes(dtick="M1", tickformat="%b %Y")
+                st.plotly_chart(fig_stress, theme=None, config=PLOTLY_CONFIG,
+                                key="stress_detail_chart", use_container_width=True)
+
+                insight(
+                    f"During {detail['label']}, the KSE 100 fell "
+                    f"{detail['portfolio_drawdown']:.1%} at its worst point and returned "
+                    f"{detail['portfolio_return']:.1%} over the full crisis period. "
+                    + (f"It took {detail['recovery_months']} months to recover the pre-crisis peak."
+                       if detail["recovery_months"] else "It had not recovered by the end of the crisis window.")
+                )
+        except FileNotFoundError:
+            st.info("Crisis period definitions not found. Create `config/crisis_periods.yaml` to enable stress testing.")
+        except Exception as e:
+            st.warning(f"Stress testing unavailable: {e}")
+
+        # ── Sector Concentration ────────────────────────────────────────
+        st.divider()
+        st.subheader("Sector concentration")
+        st.caption(
+            "Sector exposure of the recommended minimum-variance portfolio. "
+            "High concentration in one sector means diversification is thin."
+        )
+
+        try:
+            fd = load_frontier_data()
+            if fd is not None:
+                from kse.frontier import get_recommended_portfolio
+                screen_df_sec = screen_all()
+                rec = get_recommended_portfolio(fd["returns"], screen_df_sec)
+
+                if rec:
+                    rec_weights = pd.Series(dict(zip(rec["tickers"], rec["weights"])))
+                    sector_data = sector_concentration(rec_weights)
+
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("Top sector", sector_data["max_sector"],
+                              f"{sector_data['max_sector_weight']:.1%}",
+                              delta_color="off", delta_arrow="off")
+                    c2.metric("Effective sectors", f"{sector_data['effective_sectors']:.1f}",
+                              help="Higher is better. 1.0 means all weight in one sector; 5.0 means evenly spread across 5.",
+                              delta_color="off", delta_arrow="off")
+                    c3.metric("Concentration",
+                              "⚠️ High" if sector_data["concentration_flag"] else "✅ OK",
+                              delta_color="off", delta_arrow="off")
+
+                    # Sector pie chart
+                    sw = sector_data["sector_weights"]
+                    fig_sec = go.Figure(go.Pie(
+                        labels=sw.index, values=sw.values,
+                        hole=0.4, textinfo="label+percent", textposition="outside",
+                        marker=dict(colors=[tk["accent"], tk["bear"], tk["positive"],
+                                            tk["negative"], tk["invested"], tk["muted"]]),
+                    ))
+                    fig_sec.update_layout(**base_layout(tk, height=350, hovermode="closest"))
+                    st.plotly_chart(fig_sec, theme=None, config=PLOTLY_CONFIG,
+                                    key="sector_pie", use_container_width=True)
+
+                    if sector_data["concentration_flag"]:
+                        st.warning(
+                            f"**{sector_data['max_sector']}** represents "
+                            f"{sector_data['max_sector_weight']:.1%} of the recommended portfolio. "
+                            "The KSE 30 is structurally concentrated, but a well-optimized "
+                            "portfolio should aim for no single sector above 40%."
+                        )
+                    else:
+                        st.caption("Sector exposure is within acceptable limits (no single sector above 40%).")
+                else:
+                    st.info("Could not generate recommended portfolio. Visit the Basket tab first.")
+            else:
+                st.info("Stock data not available. Visit the Basket tab to load the frontier data.")
+        except FileNotFoundError:
+            st.info("Sector mapping not found. Create `config/sectors.yaml` to enable sector analysis.")
+        except Exception as e:
+            st.info(f"Sector concentration unavailable: {e}")
+
+                # ── Correlation Regime Analysis ─────────────────────────────────
+        st.divider()
+        st.subheader("Correlation regime analysis")
+        st.caption(
+            "Diversification erodes in crises — correlations spike when markets fall. "
+            "This shows how much diversification benefit you actually keep in a crash."
+        )
+
+        try:
+            fd = load_frontier_data()
+            if fd is not None:
+                from kse.regimes import fit_regimes
+
+                # Fit regime model on KSE-100 index returns
+                regime_fit = fit_regimes(TR["Total_Return"])
+                # smoothed_probabilities is a DataFrame with columns [0, 1]
+                # Regime 0 = bull (sorted by lower variance), Regime 1 = bear
+                probs = regime_fit["smoothed_probabilities"]
+                # Build label series: 1 = bear regime
+                regime_labels = (probs[1] > 0.5).astype(int)
+                regime_labels.index = TR.index[:len(regime_labels)]
+
+                corr = correlation_regime_analysis(fd["returns"], regime_labels)
+
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Avg correlation (Bull)", f"{corr['avg_corr_bull']:.2f}",
+                          delta_color="off", delta_arrow="off")
+                c2.metric("Avg correlation (Bear)", f"{corr['avg_corr_bear']:.2f}",
+                          delta_color="off", delta_arrow="off")
+                c3.metric("Diversification decay", f"{corr['diversification_decay']:.1%}",
+                          help="How much diversification benefit you lose in a bear market.",
+                          delta_color="inverse")
+
+                insight(
+                    f"In bull markets, KSE 30 stocks have an average pairwise correlation of "
+                    f"{corr['avg_corr_bull']:.2f}. In bear markets, it rises to "
+                    f"{corr['avg_corr_bear']:.2f} — a {corr['correlation_increase']:.1f}x increase. "
+                    f"Your diversification benefit drops by {corr['diversification_decay']:.0%} "
+                    f"when you need it most. The risk reduction shown by the efficient frontier "
+                    f"may not fully materialize during a crash."
+                )
+        except ImportError:
+            st.info("Regime model module not available. Correlation regime analysis requires `kse.regimes`.")
+        except Exception as e:
+            st.info(f"Correlation regime analysis unavailable: {e}")
 
     with tab_worst:
         st.subheader("The worst time to start")

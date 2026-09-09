@@ -1044,11 +1044,17 @@ with page:
                 basket_data = []
                 for ticker in selected:
                     row = stock_df[stock_df["ticker"] == ticker].iloc[0]
+                    pkr_amount = weights_basket[ticker] * monthly_amount
+                    price = row.get("price", 0)
+                    shares = int(pkr_amount / price) if pd.notna(price) and price > 0 else 0
                     basket_data.append({
                         "Ticker": ticker,
                         "Name": row["name"],
                         "Sector": row["sector"],
                         "Weight": f"{weights_basket[ticker]:.1%}",
+                        "PKR Amount": f"{pkr_amount:,.0f}",
+                        "Shares": shares,
+                        "Price": f"{price:,.0f}" if pd.notna(price) else "—",
                         "Div yield": f"{row.get('dividend_yield', 0):.1%}" if pd.notna(row.get("dividend_yield")) else "—",
                         "P/E": f"{row.get('pe', 0):.1f}" if pd.notna(row.get("pe")) else "—",
                         "Beta": f"{row.get('beta', 0):.2f}" if pd.notna(row.get("beta")) else "—",

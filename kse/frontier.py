@@ -156,7 +156,7 @@ def compute_efficient_frontier(returns_df, n_points=25):
     constraints = [
         {"type": "eq", "fun": lambda w: np.sum(w) - 1},
     ]
-    bounds = [(0.01, 1)] * n  # force a minimum 1% weight per stock
+    bounds = [(0, 1)] * n
 
     # Sweep target returns
     min_ret = mean_returns.min()
@@ -209,7 +209,7 @@ def compute_efficient_frontier(returns_df, n_points=25):
     else:
         min_var = {"return": ew_return, "volatility": ew_vol, "weights": ew_weights, "tickers": list(tickers)}
 
-    # maximum return portfolio (top of the efficient frontier)
+    # Maximum return portfolio (top of the efficient frontier)
     max_ret_idx = frontier_df["return"].idxmax()
     max_ret_weights = frontier_df.loc[max_ret_idx, "weights"]
     max_ret_return = frontier_df.loc[max_ret_idx, "return"]
@@ -250,6 +250,8 @@ def compute_portfolio_stats(returns_df, weights_dict):
     port_vol = np.sqrt(weights @ cov_matrix @ weights)
 
     return {"return": port_return, "volatility": port_vol}
+
+
 def get_recommended_portfolio(returns_df, screen_df, n_stocks=8):
     """
     Generate a recommended portfolio:
@@ -280,7 +282,7 @@ def get_recommended_portfolio(returns_df, screen_df, n_stocks=8):
         return w @ cov_matrix @ w
     
     constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - 1}]
-    bounds = [(0.01, 1)] * n  # force a minimum 1% weight per stock
+    bounds = [(0.01, 1)] * n  # Force a minimum 1% weight per stock
     x0 = np.ones(n) / n
     
     result = minimize(

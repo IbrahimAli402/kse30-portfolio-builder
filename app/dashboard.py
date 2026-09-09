@@ -483,9 +483,9 @@ page = outer.container(width=960)
 with page:
     st.title("KSE 100 Portfolio Builder")
     st.markdown(
-        "A systematic-investment-plan backtest for young Pakistani earners. "
-        f"Historical figures are computed from KSE 100 total returns, {DATA_START:%b %Y} – {DATA_END:%b %Y}; "
-        "projections use fixed scenario assumptions."
+        "A systematic-investment-plan backtest and forward-looking forecast for young Pakistani earners. "
+        f"The first four tabs compute historical figures from KSE 100 total returns ({DATA_START:%b %Y} – {DATA_END:%b %Y}). "
+        "The **Outlook** tab provides a probabilistic Monte Carlo forecast, and the **Basket** tab allows you to build a custom portfolio from the KSE 30 universe."
     )
 
     # ---- Controls ----------------------------------------------------------
@@ -537,7 +537,7 @@ with page:
 
     # ---- Tabs --------------------------------------------------------------
     tab_growth, tab_div, tab_risk, tab_worst, tab_outlook, tab_basket = st.tabs(
-        ["Growth", "Dividends", "Risk", "Worst case", "Outlook", "Basket"]
+        ["📈 Growth (Historical)", "Dividends (Historical)", "Risk (Historical)", "Worst case (Historical)", "🔮 Outlook (Forecast)", "🧺 Basket (KSE 30)"]
     )
 
     with tab_growth:

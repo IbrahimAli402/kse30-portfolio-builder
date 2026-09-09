@@ -22,6 +22,7 @@ from datetime import datetime
 
 DATA_DIR = Path(__file__).parent.parent / "data" / "processed"
 RAW_DIR = Path(__file__).parent.parent / "data" / "raw" / "stocks"
+YF_SUFFIX = ".KA"
 
 
 def load_constituents():
@@ -30,10 +31,10 @@ def load_constituents():
     return pd.read_csv(path)
 
 
-def fetch_latest_price(ticker, yf_suffix=".KA"):
+def fetch_latest_price(ticker):
     """Fetch latest price and 5y daily history from yfinance."""
     import yfinance as yf
-    yf_ticker = f"{ticker}{yf_suffix}"
+    yf_ticker = f"{ticker}{YF_SUFFIX}"
     try:
         data = yf.download(yf_ticker, period="5y", progress=False)
         if data.empty:
@@ -97,7 +98,7 @@ def calculate_price_metrics(ticker):
 def fetch_dividend_metrics(ticker, latest_price):
     """Fetch and calculate dividend metrics."""
     import yfinance as yf
-    yf_ticker = f"{ticker}{yf_suffix}"
+    yf_ticker = f"{ticker}{YF_SUFFIX}"
     try:
         stock = yf.Ticker(yf_ticker)
         dividends = stock.dividends
@@ -176,7 +177,6 @@ def update_prices():
         latest_price, _ = fetch_latest_price(ticker)
         if latest_price is None:
             print(f"  No price data — skipping")
-            # Keep existing data if we have it
             if not existing_df.empty and ticker in existing_df["ticker"].values:
                 old_row = existing_df[existing_df["ticker"] == ticker].iloc[0]
                 updated_rows.append(old_row.to_dict())

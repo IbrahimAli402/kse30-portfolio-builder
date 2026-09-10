@@ -37,6 +37,8 @@ from kse.multi_asset import compare_assets, load_gold_data
 from kse.drip import drip_comparison
 from kse.rebalance import analyze_drift, rebalancing_cost
 from kse.mutual_funds import compare_to_mutual_funds, fee_impact_chart
+from kse.liquidity import compute_liquidity_scores, get_liquidity_bounds
+from kse.comparison import compare_portfolios
 from kse.risk_metrics import (
     compute_var_cvar,
     stress_test_portfolio,
@@ -2251,6 +2253,55 @@ with page:
                 except Exception as e:
                     st.warning(f"Mutual fund comparison unavailable: {e}")
 
+                                # ── Liquidity Profile ───────────────────────────────────────
+                st.divider()
+                st.markdown("**Liquidity profile**")
+                st.caption("How long would it take to exit each position? "
+                           "Max weights are capped based on average daily volume.")
+
+                try:
+                    # Estimate portfolio size (annual contribution * horizon)
+                    portfolio_val = monthly_amount * 12 * horizon
+
+                    # Get volume data from stock_df
+                    volume_data = pd.Series({
+                        t: stock_df.loc[stock_df["ticker"] == t, "avg_volume"].iloc[0]
+                        if "avg_volume" in stock_df.columns and pd.notna(stock_df.loc[stock_df["ticker"] == t, "avg_volume"].iloc[0])
+                        else 0
+                        for t in selected
+                    })
+
+                    liq_scores = compute_liquidity_scores(volume_data, portfolio_val)
+
+                    # Display table
+                    liq_display = liq_scores.copy()
+                    liq_display["Avg_Daily_Volume"] = liq_display["Avg_Daily_Volume"].map(fmt_pkr)
+                    liq_display["Max_Weight"] = liq_display["Max_Weight"].map("{:.1%}".format)
+                    liq_display["Days_To_Liquidate"] = liq_display["Days_To_Liquidate"].map("{:.1f}".format)
+                    liq_display.columns = ["Avg Daily Volume", "Max Weight", "Days to Liquidate"]
+                    st.dataframe(liq_display, use_container_width=True, hide_index=True)
+
+                    # Flag illiquid positions
+                    illiquid = liq_scores[liq_scores["Days_To_Liquidate"] > 5]
+                    if len(illiquid) > 0:
+                        st.warning(
+                            f"⚠️ **{len(illiquid)} position(s)** would take more than 5 days "
+                            f"to liquidate at 10% of daily volume. Consider reducing position sizes "
+                            f"or choosing more liquid alternatives."
+                        )
+                    else:
+                        st.caption("✅ All positions can be liquidated within 5 days at 10% participation.")
+
+                    # Insight
+                    avg_days = liq_scores["Days_To_Liquidate"].mean()
+                    insight(
+                        f"Based on your portfolio size of {fmt_pkr(portfolio_val, 0)} and "
+                        f"average daily volumes, your positions would take an average of "
+                        f"{avg_days:.1f} days to liquidate. Max weights are capped to ensure "
+                        f"you can exit without excessive slippage."
+                    )
+                except Exception as e:
+                    st.warning(f"Liquidity analysis unavailable: {e}")
                 # ── Screen scores ──────────────────────────────────────────
                 with st.expander("Stock screen scores (5-pillar)"):
                     try:
@@ -2672,6 +2723,139 @@ with page:
                 except Exception as e:
                     st.warning(f"Efficient frontier unavailable: {e}")
 
+                        # ── Portfolio Comparison Mode ────────────────────────────
+                st.divider()
+                st.markdown("**Compare two portfolios**")
+                st.caption("Pick two sets of stocks and weights to compare side by side.")
+
+                compare_mode = st.checkbox("Enable comparison mode", key="enable_compare")
+
+                if compare_mode:
+                    try:
+                        fd_cmp = load_frontier_data()
+                        if fd_cmp is not None:
+                            # Portfolio A
+                            st.markdown(f"**Portfolio A**")
+                            cmp_a1, cmp_a2 = st.columns([3, 1])
+                            with cmp_a1:
+                                selected_a = st.multiselect(
+                                    "Select stocks for Portfolio A", all_tickers,
+                                    default=selected[:4], key="cmp_select_a"
+                                )
+                            with cmp_a2:
+                                weight_mode_a = st.segmented_control(
+                                    "Weights A", ["Equal", "Custom"],
+                                    default="Equal", required=True, key="cmp_weight_a"
+                                )
+
+                            if weight_mode_a == "Equal" or len(selected_a) <= 1:
+                                weights_a = {t: 1.0 / len(selected_a) for t in selected_a} if selected_a else {}
+                            else:
+                                weights_a = {}
+                                cols_a = st.columns(min(len(selected_a), 4))
+                                for i, ticker in enumerate(selected_a):
+                                    with cols_a[i % len(cols_a)]:
+                                        w = st.slider(
+                                            f"{ticker}", 0.0, 100.0,
+                                            100.0 / len(selected_a), 5.0,
+                                            format="%.0f%%", key=f"cmp_w_a_{ticker}"
+                                        )
+                                        weights_a[ticker] = w / 100.0
+                                total_w_a = sum(weights_a.values())
+                                if total_w_a > 0:
+                                    weights_a = {t: w / total_w_a for t, w in weights_a.items()}
+
+                            # Portfolio B
+                            st.markdown(f"**Portfolio B**")
+                            cmp_b1, cmp_b2 = st.columns([3, 1])
+                            with cmp_b1:
+                                selected_b = st.multiselect(
+                                    "Select stocks for Portfolio B", all_tickers,
+                                    default=selected[4:8] if len(selected) > 4 else selected[:4],
+                                    key="cmp_select_b"
+                                )
+                            with cmp_b2:
+                                weight_mode_b = st.segmented_control(
+                                    "Weights B", ["Equal", "Custom"],
+                                    default="Equal", required=True, key="cmp_weight_b"
+                                )
+
+                            if weight_mode_b == "Equal" or len(selected_b) <= 1:
+                                weights_b = {t: 1.0 / len(selected_b) for t in selected_b} if selected_b else {}
+                            else:
+                                weights_b = {}
+                                cols_b = st.columns(min(len(selected_b), 4))
+                                for i, ticker in enumerate(selected_b):
+                                    with cols_b[i % len(cols_b)]:
+                                        w = st.slider(
+                                            f"{ticker}", 0.0, 100.0,
+                                            100.0 / len(selected_b), 5.0,
+                                            format="%.0f%%", key=f"cmp_w_b_{ticker}"
+                                        )
+                                        weights_b[ticker] = w / 100.0
+                                total_w_b = sum(weights_b.values())
+                                if total_w_b > 0:
+                                    weights_b = {t: w / total_w_b for t, w in weights_b.items()}
+
+                            # Run comparison
+                            if len(selected_a) >= 2 and len(selected_b) >= 2:
+                                cmp_result = compare_portfolios(
+                                    weights_a=weights_a,
+                                    weights_b=weights_b,
+                                    returns=fd_cmp["returns"],
+                                    labels=("Portfolio A", "Portfolio B"),
+                                )
+
+                                # Stats table
+                                cmp_df = cmp_result["stats_table"].copy()
+                                for col in ["Portfolio A", "Portfolio B", "Difference"]:
+                                    cmp_df[col] = cmp_df[col].map("{:.2%}".format)
+                                st.dataframe(cmp_df, use_container_width=True, hide_index=True)
+
+                                # Cumulative growth chart
+                                fig_cmp = go.Figure()
+                                fig_cmp.add_trace(go.Scatter(
+                                    x=cmp_result["cumulative_a"].index,
+                                    y=cmp_result["cumulative_a"].values,
+                                    mode="lines", name="Portfolio A",
+                                    line=dict(color=tk["accent"], width=2.5),
+                                    hovertemplate="%{x|%b %Y}: %{y:.1f}<extra>Portfolio A</extra>",
+                                ))
+                                fig_cmp.add_trace(go.Scatter(
+                                    x=cmp_result["cumulative_b"].index,
+                                    y=cmp_result["cumulative_b"].values,
+                                    mode="lines", name="Portfolio B",
+                                    line=dict(color=tk["bear"], width=2.5),
+                                    hovertemplate="%{x|%b %Y}: %{y:.1f}<extra>Portfolio B</extra>",
+                                ))
+                                fig_cmp.update_layout(**base_layout(tk, legend=True, height=350))
+                                fig_cmp.update_yaxes(title_text="Growth of PKR 100")
+                                fig_cmp.update_xaxes(dtick="M12", tickformat="%Y")
+                                st.plotly_chart(fig_cmp, theme=None, config=PLOTLY_CONFIG,
+                                                key="comparison_chart", use_container_width=True)
+
+                                # Insight
+                                ret_a = cmp_result["stats_a"]["Annual Return"]
+                                ret_b = cmp_result["stats_b"]["Annual Return"]
+                                vol_a = cmp_result["stats_a"]["Volatility"]
+                                vol_b = cmp_result["stats_b"]["Volatility"]
+                                sharpe_a = cmp_result["stats_a"]["Sharpe"]
+                                sharpe_b = cmp_result["stats_b"]["Sharpe"]
+
+                                better_return = "Portfolio A" if ret_a > ret_b else "Portfolio B"
+                                better_risk_adj = "Portfolio A" if sharpe_a > sharpe_b else "Portfolio B"
+
+                                insight(
+                                    f"{better_return} has a higher annual return "
+                                    f"({max(ret_a, ret_b):.1%} vs {min(ret_a, ret_b):.1%}). "
+                                    f"{better_risk_adj} has a better risk-adjusted return "
+                                    f"(Sharpe {max(sharpe_a, sharpe_b):.2f} vs {min(sharpe_a, sharpe_b):.2f}). "
+                                    f"Portfolio A volatility: {vol_a:.1%}, Portfolio B volatility: {vol_b:.1%}."
+                                )
+                            else:
+                                st.info("Select at least 2 stocks in each portfolio to compare.")
+                    except Exception as e:
+                        st.warning(f"Comparison mode unavailable: {e}")
         except Exception as e:
             st.error(f"Basket tab error: {e}")
             st.write("This usually means `stock_metrics.csv` is missing or has an issue.")

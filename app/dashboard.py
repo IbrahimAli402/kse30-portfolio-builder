@@ -24,6 +24,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from kse.glossary import lookup as glossary_lookup
 from kse.monte_carlo import run_monte_carlo, compute_percentiles, compute_probability_table
 from kse.scenarios import get_all_scenarios, DEFAULT_WEIGHTS, blend_scenarios
 from kse.blocks import expected_return, calculate_all_expected_returns
@@ -521,6 +522,23 @@ def drawdown_chart(ep: dict, tk: dict) -> go.Figure:
 # ---------------------------------------------------------------------------
 # Small UI helpers
 # ---------------------------------------------------------------------------
+@st.dialog("Ask about this app", width="large")
+def search_dialog():
+    query = st.text_input(
+        "What does this mean?", placeholder="e.g. Sharpe ratio, VaR, CGT…",
+        key="search_query",
+    )
+    if query:
+        answer = glossary_lookup(query)
+        if answer:
+            st.markdown(answer)
+        else:
+            st.info(
+                "Not in the glossary yet. Try a shorter term (e.g. 'beta' "
+                "instead of a full sentence), or check the metric's tooltip."
+            )
+    st.caption("Educational definitions only — not investment advice.")
+
 def insight(text: str) -> None:
     with st.container(border=True):
         st.markdown(f"**Key insight** · {text}")
@@ -563,6 +581,12 @@ with st.sidebar:
         },
     )
 selected = TAB_ORDER[[TAB_META[k]["label"] for k in TAB_ORDER].index(selected_label)]
+
+# ── Search palette ──────────────────────────────────────────────────
+if st.sidebar.button("🔍 Search", use_container_width=True):
+    search_dialog()
+
+st.sidebar.divider()
 outer = st.container(horizontal=True, horizontal_alignment="center")
 page = outer.container(width=960)
 
@@ -1943,13 +1967,13 @@ with page:
                 top_8 = all_tickers[:8]
 
             # ── Stock picker ──────────────────────────────────────────────
-            selected = st.multiselect(
+            selected_stocks = st.multiselect(
                 "Select stocks", all_tickers,
                 default=top_8,
                 help="Pick from the screened KSE 30 universe"
             )
 
-            if len(selected) < 2:
+            if len(selected_stocks) < 2:
                 st.warning("Select at least 2 stocks for a basket.")
             else:
                 # ── Recommended Portfolio ────────────────────────────────
@@ -2007,19 +2031,17 @@ with page:
 
                 with bc2:
                     if weight_mode == "Equal":
-                        weights_basket = {t: 1.0 / len(selected) for t in selected}
+                        weights_basket = {t: 1.0 / len(selected_stocks) for t in selected_stocks}
                     else:
                         weights_basket = {}
-                        cols = st.columns(min(len(selected), 4))
-                        for i, ticker in enumerate(selected):
+                        cols = st.columns(min(len(selected_stocks), 4))
+                        for i, ticker in enumerate(selected_stocks):
                             with cols[i % len(cols)]:
-                                # Use 0-100 range for the slider so it displays as percentage
                                 w = st.slider(
                                     f"{ticker}", 0.0, 100.0,
-                                    100.0 / len(selected), 5.0,
+                                    100.0 / len(selected_stocks), 5.0,
                                     format="%.0f%%"
                                 )
-                                # Convert back to decimal for calculations
                                 weights_basket[ticker] = w / 100.0
 
                         total_w = sum(weights_basket.values())
@@ -2031,7 +2053,7 @@ with page:
                 st.markdown("**Basket composition**")
 
                 basket_data = []
-                for ticker in selected:
+                for ticker in selected_stocks:
                     row = stock_df[stock_df["ticker"] == ticker].iloc[0]
                     pkr_amount = weights_basket[ticker] * monthly_amount
                     price = row.get("price", 0)
@@ -2055,15 +2077,15 @@ with page:
                 
                 # ── CSV Export ─────────────────────────────────────────
                 csv_df = export_portfolio_csv(
-                    tickers=selected,
+                    tickers=selected_stocks,
                     weights=weights_basket,
                     prices={t: stock_df[stock_df["ticker"] == t]["price"].iloc[0]
-                            for t in selected},
+                            for t in selected_stocks},
                     monthly_amount=monthly_amount,
                     names={t: stock_df[stock_df["ticker"] == t]["name"].iloc[0]
-                           for t in selected},
+                           for t in selected_stocks},
                     sectors={t: stock_df[stock_df["ticker"] == t]["sector"].iloc[0]
-                             for t in selected},
+                             for t in selected_stocks},
                 )
                 st.download_button(
                     label="📥 Download basket as CSV",
@@ -2073,9 +2095,8 @@ with page:
                 )
 
                 # ── Basket statistics ──────────────────────────────────────
-                # Calculate weighted averages, handling missing values
                 valid_stocks = []
-                for t in selected:
+                for t in selected_stocks:
                     if t in stock_df["ticker"].values:
                         row = stock_df[stock_df["ticker"] == t].iloc[0]
                         if pd.notna(row.get("dividend_yield")) and pd.notna(row.get("pe")) \
@@ -2103,7 +2124,7 @@ with page:
                     avg_div = avg_pe = avg_beta = avg_dd = 0
 
                 sector_weights = {}
-                for ticker in selected:
+                for ticker in selected_stocks:
                     row = stock_df[stock_df["ticker"] == ticker].iloc[0]
                     sector = row["sector"]
                     sector_weights[sector] = sector_weights.get(sector, 0) + weights_basket[ticker]
@@ -2126,17 +2147,14 @@ with page:
                     f"{s} {w:.0%}" for s, w in sorted(sector_weights.items(),
                                                        key=lambda x: -x[1])
                 ))
-                                # ── Rebalancing Guidance ───────────────────────────────────
+                # ── Rebalancing Guidance ───────────────────────────────────
                 st.divider()
                 st.markdown("**Rebalancing guidance**")
                 st.caption("How far has your basket drifted from target weights? "
                            "When should you rebalance, and what does it cost?")
 
                 try:
-                    # Use current weights as "target", simulate drift
-                    # In a real app, target = original allocation, current = drifted
-                    # Here we show the framework with equal-weight as target
-                    target_w = {t: 1.0 / len(selected) for t in selected}
+                    target_w = {t: 1.0 / len(selected_stocks) for t in selected_stocks}
                     current_w = weights_basket
 
                     drift = analyze_drift(target_w, current_w, threshold=0.05)
@@ -2147,13 +2165,12 @@ with page:
                                delta_color="inverse" if abs(drift["max_drift"]) > 0.05 else "off",
                                delta_arrow="off")
                     dc2.metric("Positions breached", drift["n_breached"],
-                               f"of {len(selected)}",
+                               f"of {len(selected_stocks)}",
                                delta_color="off", delta_arrow="off")
                     dc3.metric("Action needed",
                                "⚠️ Rebalance" if drift["needs_rebalance"] else "✅ Hold",
                                delta_color="off", delta_arrow="off")
 
-                    # Drift table
                     drift_df = drift["drift_table"].copy()
                     drift_df["Target"] = drift_df["Target"].map("{:.1%}".format)
                     drift_df["Current"] = drift_df["Current"].map("{:.1%}".format)
@@ -2162,8 +2179,7 @@ with page:
                     drift_df = drift_df[["Ticker", "Target", "Current", "Drift", "Abs_Drift", "Breached"]]
                     st.dataframe(drift_df, use_container_width=True, hide_index=True)
 
-                    # Rebalancing cost estimate
-                    portfolio_val = monthly_amount * 12 * horizon  # rough estimate
+                    portfolio_val = monthly_amount * 12 * horizon
                     cost = rebalancing_cost(
                         target_weights=target_w,
                         current_weights=current_w,
@@ -2198,7 +2214,7 @@ with page:
                         st.caption("All positions within 5% drift threshold. No rebalancing needed yet.")
                 except Exception as e:
                     st.warning(f"Rebalancing analysis unavailable: {e}")
-                                # ── Mutual Fund Comparison ─────────────────────────────────
+                # ── Mutual Fund Comparison ─────────────────────────────────
                 st.divider()
                 st.markdown("**DIY vs Mutual Funds**")
                 st.caption(
@@ -2207,7 +2223,6 @@ with page:
                 )
 
                 try:
-                    # Use the basket's expected return if available, else use Base scenario
                     from kse.blocks import expected_return
                     try:
                         diy_return, _, _ = expected_return("Base")
@@ -2222,7 +2237,6 @@ with page:
                         tx_cost_pct=TX_COST_PCT,
                     )
 
-                    # Comparison table
                     mf_df = mf["comparison_table"].copy()
                     mf_df["Gross_Return"] = mf_df["Gross_Return"].map("{:.1%}".format)
                     mf_df["Fee"] = mf_df["Fee"].map("{:.1%}".format)
@@ -2235,7 +2249,6 @@ with page:
                                     "Terminal Value", "Total Invested", "Profit", "Fees Paid"]
                     st.dataframe(mf_df, use_container_width=True, hide_index=True)
 
-                    # KPI row: DIY vs equity fund
                     fa = mf["fee_drag_analysis"]
                     mc1, mc2, mc3, mc4 = st.columns(4)
                     mc1.metric("Your fee", f"{fa['diy_fee']:.1%}",
@@ -2259,7 +2272,6 @@ with page:
                         f"you keep the fee difference working for you, not the fund manager."
                     )
 
-                    # Fee impact chart
                     st.divider()
                     st.markdown("**How fees destroy wealth**")
                     st.caption(f"Same {diy_return:.0%} gross return, different fee levels. "
@@ -2287,7 +2299,6 @@ with page:
                     st.plotly_chart(fig_fee, theme=None, config=PLOTLY_CONFIG,
                                     key="fee_impact_chart", use_container_width=True)
 
-                    # Wealth destroyed insight
                     zero_fee = fee_df[fee_df["Fee"] == 0.0].iloc[0]
                     max_fee = fee_df[fee_df["Fee"] == fee_df["Fee"].max()].iloc[0]
                     destroyed = zero_fee["Terminal_Value"] - max_fee["Terminal_Value"]
@@ -2302,28 +2313,24 @@ with page:
                     )
                 except Exception as e:
                     st.warning(f"Mutual fund comparison unavailable: {e}")
-
-                                # ── Liquidity Profile ───────────────────────────────────────
+                # ── Liquidity Profile ───────────────────────────────────────
                 st.divider()
                 st.markdown("**Liquidity profile**")
                 st.caption("How long would it take to exit each position? "
                            "Max weights are capped based on average daily volume.")
 
                 try:
-                    # Estimate portfolio size (annual contribution * horizon)
                     portfolio_val = monthly_amount * 12 * horizon
 
-                    # Get volume data from stock_df
                     volume_data = pd.Series({
                         t: stock_df.loc[stock_df["ticker"] == t, "avg_volume"].iloc[0]
                         if "avg_volume" in stock_df.columns and pd.notna(stock_df.loc[stock_df["ticker"] == t, "avg_volume"].iloc[0])
                         else 0
-                        for t in selected
+                        for t in selected_stocks
                     })
 
                     liq_scores = compute_liquidity_scores(volume_data, portfolio_val)
 
-                    # Display table
                     liq_display = liq_scores.copy()
                     liq_display["Avg_Daily_Volume"] = liq_display["Avg_Daily_Volume"].map(fmt_pkr)
                     liq_display["Max_Weight"] = liq_display["Max_Weight"].map("{:.1%}".format)
@@ -2331,7 +2338,6 @@ with page:
                     liq_display.columns = ["Avg Daily Volume", "Max Weight", "Days to Liquidate"]
                     st.dataframe(liq_display, use_container_width=True, hide_index=True)
 
-                    # Flag illiquid positions
                     illiquid = liq_scores[liq_scores["Days_To_Liquidate"] > 5]
                     if len(illiquid) > 0:
                         st.warning(
@@ -2342,7 +2348,6 @@ with page:
                     else:
                         st.caption("✅ All positions can be liquidated within 5 days at 10% participation.")
 
-                    # Insight
                     avg_days = liq_scores["Days_To_Liquidate"].mean()
                     insight(
                         f"Based on your portfolio size of {fmt_pkr(portfolio_val, 0)} and "
@@ -2356,13 +2361,11 @@ with page:
                 with st.expander("Stock screen scores (5-pillar)"):
                     try:
                         screen_df = screen_all()
-                        screen_df = screen_df[screen_df["Ticker"].isin(selected)]
+                        screen_df = screen_df[screen_df["Ticker"].isin(selected_stocks)]
                         st.dataframe(screen_df, use_container_width=True, hide_index=True)
                     except Exception as e:
                         st.warning(f"Screen scores unavailable: {e}")
-
-                # ── Comparison: Basket vs Index ─────────────────────────────
-                                # ── Basket vs KSE 100 Benchmark Comparison ─────────────────
+                # ── Basket vs KSE 100 Benchmark Comparison ─────────────────
                 st.divider()
                 st.markdown("**Basket vs KSE 100 benchmark**")
                 st.caption(
@@ -2372,26 +2375,22 @@ with page:
 
                 try:
                     fd = load_frontier_data()
-                    if fd is not None and len(selected) >= 2:
+                    if fd is not None and len(selected_stocks) >= 2:
                         from kse.frontier import compute_portfolio_stats
                         basket_stats = compute_portfolio_stats(fd["returns"], weights_basket)
 
                         if basket_stats:
-                            # Build portfolio return series from stock returns
-                            available_tickers = [t for t in selected if t in fd["returns"].columns]
+                            available_tickers = [t for t in selected_stocks if t in fd["returns"].columns]
                             if len(available_tickers) >= 2:
                                 w = pd.Series(weights_basket)
                                 w = w[available_tickers]
                                 w = w / w.sum()
                                 port_returns = (fd["returns"][available_tickers] * w).sum(axis=1)
 
-                                # Benchmark = KSE-100 total returns
                                 bench_returns = TR["Total_Return"]
 
-                                # Run comparison
                                 cmp = compare_to_benchmark(port_returns, bench_returns)
 
-                                # KPI row
                                 bc1, bc2, bc3, bc4 = st.columns(4)
                                 bc1.metric(
                                     "Annual return",
@@ -2418,7 +2417,6 @@ with page:
                                     delta_color="normal",
                                 )
 
-                                # Second row: alpha, beta, capture
                                 ac1, ac2, ac3, ac4 = st.columns(4)
                                 ac1.metric(
                                     "Alpha (annual)",
@@ -2445,7 +2443,6 @@ with page:
                                     delta_color="inverse",
                                 )
 
-                                # Comparison chart: cumulative returns (aligned dates only)
                                 common_dates = port_returns.index.intersection(bench_returns.index)
                                 port_aligned = port_returns.loc[common_dates]
                                 bench_aligned = bench_returns.loc[common_dates]
@@ -2471,7 +2468,6 @@ with page:
                                 st.plotly_chart(fig_bench, theme=None, config=PLOTLY_CONFIG,
                                                 key="benchmark_cumulative", use_container_width=True)
 
-                                # Insight
                                 if cmp["alpha"] > 0:
                                     alpha_msg = f"outperformed by {cmp['alpha']:.1%} per year"
                                 else:
@@ -2491,7 +2487,6 @@ with page:
                                     f"information ratio of {cmp['information_ratio']:.2f}."
                                 )
 
-                                # Rolling alpha chart (expandable)
                                 with st.expander("Rolling 3-year alpha"):
                                     roll = rolling_alpha(port_returns, bench_returns, window=36)
                                     if len(roll) > 0:
@@ -2518,7 +2513,6 @@ with page:
                                     else:
                                         st.info("Not enough data for rolling alpha (needs 36+ months).")
 
-                                # Detailed stats table (expandable)
                                 with st.expander("Detailed benchmark statistics"):
                                     stats_data = [
                                         {"Metric": "Annual return", "Basket": f"{cmp['portfolio_stats']['annual_return']:.2%}", "KSE 100": f"{cmp['benchmark_stats']['annual_return']:.2%}"},
@@ -2542,7 +2536,7 @@ with page:
                         st.info("Frontier data not loaded. Select at least 2 stocks to see benchmark comparison.")
                 except Exception as e:
                     st.warning(f"Benchmark comparison unavailable: {e}")
-                                    # ── Diversification Curve ───────────────────────────────
+                # ── Diversification Curve ───────────────────────────────
                 st.divider()
                 st.markdown("**Diversification benefit**")
                 st.caption("How portfolio volatility falls as you add more stocks. "
@@ -2555,7 +2549,6 @@ with page:
 
                         fig_div = go.Figure()
 
-                        # P10-P90 band
                         fig_div.add_trace(go.Scatter(
                             x=dc["n_stocks"], y=dc["p90_volatility"],
                             mode="lines", line=dict(width=0), showlegend=False,
@@ -2568,7 +2561,6 @@ with page:
                             name="P10–P90 range", hoverinfo="skip"
                         ))
 
-                        # Average volatility
                         fig_div.add_trace(go.Scatter(
                             x=dc["n_stocks"], y=dc["avg_volatility"],
                             mode="lines+markers",
@@ -2578,12 +2570,11 @@ with page:
                             hovertemplate="%{x} stocks: %{y:.1%} volatility<extra></extra>"
                         ))
 
-                        # Add marker for user's current basket
                         from kse.frontier import compute_portfolio_stats
                         basket_stats_div = compute_portfolio_stats(fd["returns"], weights_basket)
                         if basket_stats_div:
                             fig_div.add_trace(go.Scatter(
-                                x=[len(selected)],
+                                x=[len(selected_stocks)],
                                 y=[basket_stats_div["volatility"]],
                                 mode="markers+text",
                                 marker=dict(size=14, color=tk["accent"], symbol="circle",
@@ -2626,7 +2617,6 @@ with page:
 
                         fig_front = go.Figure()
 
-                        # Frontier curve — only the efficient part (above min variance)
                         frontier_df = fr["frontier"]
                         min_var_return = fr["min_var"]["return"]
                         efficient = frontier_df[frontier_df["return"] >= min_var_return].sort_values("volatility")
@@ -2640,7 +2630,6 @@ with page:
                             hovertemplate="Vol: %{x:.1%}<br>Return: %{y:.1%}<extra></extra>"
                         ))
 
-                        # Individual stocks — muted circles
                         fig_front.add_trace(go.Scatter(
                             x=ss["volatility"], y=ss["return"],
                             mode="markers",
@@ -2650,7 +2639,6 @@ with page:
                             hovertemplate="%{text}<br>Vol: %{x:.1%}<br>Return: %{y:.1%}<extra></extra>"
                         ))
 
-                        # Equal-weight portfolio — positive star
                         fig_front.add_trace(go.Scatter(
                             x=[ew["volatility"]], y=[ew["return"]],
                             mode="markers",
@@ -2660,7 +2648,6 @@ with page:
                             hovertemplate="Equal-weight<br>Vol: %{x:.1%}<br>Return: %{y:.1%}<extra></extra>"
                         ))
 
-                        # Minimum variance portfolio — bear diamond
                         fig_front.add_trace(go.Scatter(
                             x=[mv["volatility"]], y=[mv["return"]],
                             mode="markers",
@@ -2670,7 +2657,6 @@ with page:
                             hovertemplate="Min variance<br>Vol: %{x:.1%}<br>Return: %{y:.1%}<extra></extra>"
                         ))
 
-                        # User's selected basket — accent circle
                         from kse.frontier import compute_portfolio_stats
                         basket_stats = compute_portfolio_stats(fd["returns"], weights_basket)
                         if basket_stats:
@@ -2684,7 +2670,6 @@ with page:
                                 hovertemplate="Your basket<br>Vol: %{x:.1%}<br>Return: %{y:.1%}<extra></extra>"
                             ))
 
-                        # Recommended portfolio — accent cross
                         from kse.frontier import get_recommended_portfolio
                         screen_df_rec = screen_all()
                         rec = get_recommended_portfolio(fd["returns"], screen_df_rec)
@@ -2699,6 +2684,7 @@ with page:
                             ))
 
                         fig_front.update_layout(**base_layout(tk, height=400, legend=True, hovermode="closest"))
+                        fig_front.update_layout(clickmode="none")
                         fig_front.update_xaxes(title_text="Annualized volatility (risk)")
                         fig_front.update_yaxes(title_text="Annualized expected return")
                         chart(fig_front, "efficient_frontier")
@@ -2720,11 +2706,10 @@ with page:
                         portfolio_choice = st.selectbox(
                             "Select a portfolio to inspect:",
                             ["Minimum Variance", "Equal-Weight", "Maximum Return", "Your Custom Basket"],
-                            key="frontier_portfolio_inspector", # Unique key to prevent errors
+                            key="frontier_portfolio_inspector",
                             label_visibility="collapsed"
                         )
 
-                        # Get the selected portfolio's weights
                         if portfolio_choice == "Minimum Variance":
                             sel_weights = fr["min_var"]["weights"]
                             sel_tickers = fr["min_var"]["tickers"]
@@ -2734,16 +2719,15 @@ with page:
                         elif portfolio_choice == "Maximum Return":
                             sel_weights = fr["max_ret"]["weights"]
                             sel_tickers = fr["max_ret"]["tickers"]
-                        else:  # Your Custom Basket
+                        else:
                             sel_tickers = list(fd["returns"].columns)
                             sel_weights = np.array([weights_basket.get(t, 0) for t in sel_tickers])
                             if sel_weights.sum() > 0:
                                 sel_weights = sel_weights / sel_weights.sum()
 
-                        # Build the composition table
                         comp_data = []
                         for ticker, weight in zip(sel_tickers, sel_weights):
-                            if weight > 0.001:  # Only show > 0.1%
+                            if weight > 0.001:
                                 row = stock_df[stock_df["ticker"] == ticker].iloc[0]
                                 pkr_amount = weight * monthly_amount
                                 price = row.get("price", 0)
@@ -2763,8 +2747,7 @@ with page:
 
                 except Exception as e:
                     st.warning(f"Efficient frontier unavailable: {e}")
-
-                        # ── Portfolio Comparison Mode ────────────────────────────
+                # ── Portfolio Comparison Mode ────────────────────────────
                 st.divider()
                 st.markdown("**Compare two portfolios**")
                 st.caption("Pick two sets of stocks and weights to compare side by side.")
@@ -2775,13 +2758,12 @@ with page:
                     try:
                         fd_cmp = load_frontier_data()
                         if fd_cmp is not None:
-                            # Portfolio A
                             st.markdown(f"**Portfolio A**")
                             cmp_a1, cmp_a2 = st.columns([3, 1])
                             with cmp_a1:
                                 selected_a = st.multiselect(
                                     "Select stocks for Portfolio A", all_tickers,
-                                    default=selected[:4], key="cmp_select_a"
+                                    default=selected_stocks[:4], key="cmp_select_a"
                                 )
                             with cmp_a2:
                                 weight_mode_a = st.segmented_control(
@@ -2806,13 +2788,12 @@ with page:
                                 if total_w_a > 0:
                                     weights_a = {t: w / total_w_a for t, w in weights_a.items()}
 
-                            # Portfolio B
                             st.markdown(f"**Portfolio B**")
                             cmp_b1, cmp_b2 = st.columns([3, 1])
                             with cmp_b1:
                                 selected_b = st.multiselect(
                                     "Select stocks for Portfolio B", all_tickers,
-                                    default=selected[4:8] if len(selected) > 4 else selected[:4],
+                                    default=selected_stocks[4:8] if len(selected_stocks) > 4 else selected_stocks[:4],
                                     key="cmp_select_b"
                                 )
                             with cmp_b2:
@@ -2838,7 +2819,6 @@ with page:
                                 if total_w_b > 0:
                                     weights_b = {t: w / total_w_b for t, w in weights_b.items()}
 
-                            # Run comparison
                             if len(selected_a) >= 2 and len(selected_b) >= 2:
                                 cmp_result = compare_portfolios(
                                     weights_a=weights_a,
@@ -2847,13 +2827,11 @@ with page:
                                     labels=("Portfolio A", "Portfolio B"),
                                 )
 
-                                # Stats table
                                 cmp_df = cmp_result["stats_table"].copy()
                                 for col in ["Portfolio A", "Portfolio B", "Difference"]:
                                     cmp_df[col] = cmp_df[col].map("{:.2%}".format)
                                 st.dataframe(cmp_df, use_container_width=True, hide_index=True)
 
-                                # Cumulative growth chart
                                 fig_cmp = go.Figure()
                                 fig_cmp.add_trace(go.Scatter(
                                     x=cmp_result["cumulative_a"].index,
@@ -2875,7 +2853,6 @@ with page:
                                 st.plotly_chart(fig_cmp, theme=None, config=PLOTLY_CONFIG,
                                                 key="comparison_chart", use_container_width=True)
 
-                                # Insight
                                 ret_a = cmp_result["stats_a"]["Annual Return"]
                                 ret_b = cmp_result["stats_b"]["Annual Return"]
                                 vol_a = cmp_result["stats_a"]["Volatility"]

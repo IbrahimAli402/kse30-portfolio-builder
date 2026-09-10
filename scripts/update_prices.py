@@ -85,12 +85,25 @@ def calculate_price_metrics(ticker):
 
     latest_price = close.iloc[-1]
 
+    # Average daily volume (last 30 days, in PKR)
+    if "Volume" in df.columns:
+        vol_data = df["Volume"].dropna()
+        if len(vol_data) >= 30:
+            avg_volume = float(vol_data.tail(30).mean() * latest_price)
+        elif len(vol_data) > 0:
+            avg_volume = float(vol_data.mean() * latest_price)
+        else:
+            avg_volume = None
+    else:
+        avg_volume = None
+
     return {
         "price": float(latest_price),
         "tr_cagr_5y": float(cagr) if cagr else None,
         "volatility": float(vol),
         "max_drawdown": float(max_dd),
         "beta": float(beta),
+        "avg_volume": avg_volume,
         "data_points": len(close),
     }
 

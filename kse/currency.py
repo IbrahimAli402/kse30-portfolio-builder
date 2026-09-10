@@ -9,7 +9,7 @@ Pakistani investors — PKR returns overstate real wealth creation
 when the currency is depreciating.
 
 Key identity:
-    R_usd = (1 + R_pkr) * (1 + R_fx) - 1
+    R_usd = (1 + R_pkr) / (1 + R_fx) - 1
 where R_fx is the monthly return of the USD/PKR rate.
 """
 
@@ -47,8 +47,7 @@ def convert_returns_to_usd(
     Convert PKR-denominated returns to USD-denominated returns.
 
     A Pakistani investor converting PKR to USD each month and
-    investing abroad would earn the USD return. Conversely, a
-    foreign investor in KSE-100 earns R_usd = (1+R_pkr)*(1+R_fx) - 1.
+    investing abroad would earn the USD return. Conversely,     a foreign investor in KSE-100 earns R_usd = (1+R_pkr)/(1+R_fx) - 1.
 
     Parameters
     ----------
@@ -81,8 +80,9 @@ def convert_returns_to_usd(
     pkr = pkr_norm.loc[common]
     fx_ret = fx_norm.loc[common, "Monthly_Return"]
 
-    # USD return = (1 + PKR return) * (1 + FX return) - 1
-    usd_returns = (1 + pkr) * (1 + fx_ret) - 1
+    # USD return = (1 + PKR return) / (1 + FX return) - 1
+    # divide because pkr depreciation (positive fx_ret) reduces usd value
+    usd_returns = (1 + pkr) / (1 + fx_ret) - 1
 
     return usd_returns
 

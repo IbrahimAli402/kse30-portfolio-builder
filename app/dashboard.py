@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from streamlit_option_menu import option_menu
 # ── Phase 2 imports ────────────────────────────────────────────────────
 import sys
 from pathlib import Path
@@ -53,7 +54,7 @@ st.set_page_config(
     page_title="KSE 100 Portfolio Builder",
     page_icon=":material/show_chart:",
     layout="wide",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="expanded",
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -108,7 +109,7 @@ PKR_USD = FX_DATA["Rate"].iloc[-1] if FX_DATA is not None else 280
 TOKENS = {
     "light": dict(
         bg="#faf9f5", surface="#f5f3ed", text="#2d2a26", muted="#6b665e",
-        border="#e3dfd7", accent="#c96442", positive="#2f8f6a", negative="#b85c4a",
+                border="#e3dfd7", accent="#b0532f", positive="#27775a", negative="#a4412f",
         bear="#3f6fb5", invested="#8a8580",
     ),
     "dark": dict(
@@ -118,6 +119,41 @@ TOKENS = {
     ),
 }
 FONT_STACK = "Instrument Sans, Aptos, Segoe UI, sans-serif"
+TAB_META = {
+    "outlook": dict(label="Forecast", icon="🔮", lines=[
+        "A probabilistic ten-year forecast built from 5,000 simulated paths — "
+        "not a single guess, but a range of what could realistically happen.",
+    ]),
+    "goals": dict(label="Goals", icon="🎯", lines=[
+        "Work backward from a real target — university, retirement, a house — "
+        "to the monthly SIP and the odds of getting there.",
+    ]),
+    "basket": dict(label="Basket", icon="🧺", lines=[
+        "Swap the index for your own picks from the KSE 30 — size positions "
+        "against real trading liquidity, and compare two portfolios side by side.",
+    ]),
+    "growth": dict(label="Growth", icon="📈", lines=[
+        "Projected forward and checked against 2010–2024 history — how your "
+        "monthly investment actually compounds.",
+    ]),
+    "risk": dict(label="Risk", icon="⚠️", lines=[
+        "Drawdowns, VaR, sector concentration, and what happens to your risk "
+        "in a crisis — the discomfort that comes with the returns.",
+    ]),
+    "worst": dict(label="Worst case", icon="📉", lines=[
+        "A SIP started right at the market peak, just before the crash. "
+        "Does rupee-cost averaging hold up?",
+    ]),
+    "dividends": dict(label="Dividends", icon="💵", lines=[
+        "Cash income at each milestone, and what reinvesting instead of "
+        "spending it is worth over time.",
+    ]),
+    "context": dict(label="Market context", icon="📊", lines=[
+        "Which sectors are leading or lagging right now, and the events "
+        "that have moved the KSE-100 over the past 15 years.",
+    ]),
+}
+TAB_ORDER = ["outlook", "goals", "basket", "growth", "risk", "worst", "dividends", "context"]
 
 
 def theme_tokens() -> dict:
@@ -503,6 +539,30 @@ def chart(fig: go.Figure, key: str) -> None:
 # Page body
 # ---------------------------------------------------------------------------
 tk = theme_tokens()
+# ── Sidebar navigation ─────────────────────────────────────────────────
+with st.sidebar:
+    selected_label = option_menu(
+        menu_title="KSE 100",
+        options=[TAB_META[k]["label"] for k in TAB_ORDER],
+        icons=["graph-up-arrow", "bullseye", "basket", "bar-chart-line",
+               "exclamation-triangle", "graph-down-arrow", "cash-coin", "diagram-3"],
+        default_index=0,
+        styles={
+            "container": {"background-color": "transparent", "padding": "0"},
+            "nav-link": {
+                "font-family": FONT_STACK, "font-size": "15px",
+                "color": tk["muted"], "background-color": "transparent",
+                "margin": "2px 0", "border-radius": "8px",
+            },
+            "nav-link:hover": {"background-color": rgba(tk["accent"], 0.06)},
+            "nav-link-selected": {
+                "background-color": rgba(tk["accent"], 0.12),
+                "color": tk["accent"], "font-weight": "600",
+            },
+            "icon": {"font-size": "15px"},
+        },
+    )
+selected = TAB_ORDER[[TAB_META[k]["label"] for k in TAB_ORDER].index(selected_label)]
 outer = st.container(horizontal=True, horizontal_alignment="center")
 page = outer.container(width=960)
 
@@ -575,12 +635,7 @@ with page:
     # ── Disclaimer banner ──────────────────────────────────────────────
     st.warning(get_disclaimer("short"))
     
-    st.markdown(
-        "A systematic-investment-plan backtest and forward-looking forecast for young Pakistani earners. "
-        f"The first four tabs compute historical figures from KSE 100 total returns ({DATA_START:%b %Y} – {DATA_END:%b %Y}). "
-        "The **Outlook** tab provides a probabilistic Monte Carlo forecast, and the **Basket** tab allows you to build a custom portfolio from the KSE 30 universe."
-    )
-
+   
     # ---- Controls ----------------------------------------------------------
     st.space("small")
 
@@ -647,11 +702,13 @@ with page:
     st.divider()
 
     # ---- Tabs --------------------------------------------------------------
-    tab_growth, tab_div, tab_risk, tab_worst, tab_outlook, tab_goals, tab_context, tab_basket = st.tabs(
-        ["📈 Growth (Historical)", "Dividends (Historical)", "Risk (Historical)", "Worst case (Historical)", "🔮 Outlook (Forecast)", "🎯 Goals (Planner)", "📊 Market Context", "🧺 Basket (KSE 30)"]
-    )
+        # ---- Dynamic per-tab header ─────────────────────────────────────────
+    meta = TAB_META[selected]
+    st.caption(f"**{meta['label'].upper()}**")
+    st.markdown(f"{meta['icon']} " + " ".join(meta["lines"]))
 
-    with tab_growth:
+    # ---- Tab content ────────────────────────────────────────────────────
+    if selected == "growth":
         VIEWS = {"Projection": "Projection", "Scenarios": "Compare scenarios", "Backtest": f"{DATA_START:%Y}–{DATA_END:%Y} backtest"}
         head, ctl = st.columns([3, 2], vertical_alignment="bottom")
         with ctl:
@@ -727,7 +784,7 @@ with page:
         yby.columns = ["Year", "Portfolio value", "Invested", "Profit", "Annual dividend", "Monthly dividend", "Transaction costs"]
         table_view(yby, "Year-by-year projection")
 
-    with tab_div:
+    if selected == "dividends":
         st.subheader("Dividend income at milestones")
         st.caption(f"Annual cash dividends if not reinvested, at a {ANNUAL_DIVIDEND_YIELD:.0%} yield on portfolio value.")
         chart(dividend_chart(milestones, tk), "dividends")
@@ -818,7 +875,7 @@ with page:
         except Exception as e:
             st.warning(f"DRIP analysis unavailable: {e}")
 
-    with tab_risk:
+    if selected == "risk":
         st.subheader("Probability of losing money by holding period")
         st.caption(f"Share of rolling windows with a negative total return · {tier} tier · "
                    f"{DATA_START:%b %Y} – {DATA_END:%b %Y}.")
@@ -1173,7 +1230,7 @@ with page:
             st.info("Gold data not loaded. Run: `python scripts/fetch_multi_asset.py`")
         except Exception as e:
             st.warning(f"Multi-asset comparison unavailable: {e}")
-    with tab_worst:
+    if selected == "worst":
         st.subheader("The worst time to start")
         st.caption(f"A SIP begun at the {tr_episode['peak']:%B %Y} market peak — right before the "
                    f"{abs(tr_episode['depth_pct']):.0f}% fall — in the {tier} tier, held to {DATA_END:%b %Y}.")
@@ -1202,7 +1259,7 @@ with page:
         wt.columns = ["Month", "Portfolio value", "Invested", "Profit", "Underwater"]
         table_view(wt)
 
-    with tab_outlook:
+    if selected == "outlook":
         st.subheader("Outlook 2026–2035")
         st.caption("A probabilistic ten-year projection. 5,000 simulated paths, "
                    "blended by scenario weight. Not a point forecast — a distribution.")
@@ -1370,7 +1427,7 @@ with page:
         fig_fan.add_trace(go.Scatter(
             x=months / 12, y=adj_p10, mode="lines",
             line=dict(width=0), fill="tonexty",
-            fillcolor="rgba(201, 100, 66, 0.1)",
+            fillcolor=rgba(tk["accent"], 0.10),
             name="P10–P90 (80% of outcomes)"
         ))
 
@@ -1381,32 +1438,27 @@ with page:
         fig_fan.add_trace(go.Scatter(
             x=months / 12, y=adj_p25, mode="lines",
             line=dict(width=0), fill="tonexty",
-            fillcolor="rgba(201, 100, 66, 0.2)",
+            fillcolor=rgba(tk["accent"], 0.20),
             name="P25–P75 (50% of outcomes)"
         ))
 
         fig_fan.add_trace(go.Scatter(
             x=months / 12, y=adj_p50, mode="lines",
-            line=dict(color="#c96442", width=2.5),
+            line=dict(color=tk["accent"], width=2.5),
             name="Median (P50)"
         ))
 
         fig_fan.add_trace(go.Scatter(
             x=months / 12, y=adj_dep, mode="lines",
-            line=dict(color="gray", width=1.5, dash="dash"),
+            line=dict(color=tk["invested"], width=1.5, dash="dash"),
             name="Cumulative deposits"
         ))
 
         y_title = "Portfolio value" if currency == "PKR" else "Portfolio value (USD)"
-        fig_fan.update_layout(
-            xaxis_title="Years from start",
-            yaxis_title=y_title,
-            hovermode="x unified",
-            height=400,
-            legend=dict(orientation="h", yanchor="bottom", y=1.02),
-            margin=dict(l=10, r=10, t=10, b=10),
-        )
-        st.plotly_chart(fig_fan, use_container_width=True)
+        fig_fan.update_layout(**base_layout(tk, height=400, legend=True))
+        fig_fan.update_xaxes(title_text="Years from start")
+        fig_fan.update_yaxes(title_text=y_title)
+        chart(fig_fan, "outlook_fan")
 
         st.info(
             f"**Key insight:** Over {horizon_outlook} years, the median outcome is "
@@ -1433,14 +1485,14 @@ with page:
         fig_hist = go.Figure()
         fig_hist.add_trace(go.Histogram(
             x=terminal_adjusted, nbinsx=40,
-            marker_color="#c96442", opacity=0.7,
+            marker_color=tk["accent"], opacity=0.7,
             name="Terminal wealth"
         ))
 
         for i, (label, val, color) in enumerate([
-            ("P10", kpi_p10, "#b85c4a"),
-            ("P50", kpi_p50, "#c96442"),
-            ("P90", kpi_p90, "#5a7a4a"),
+            ("P10", kpi_p10, tk["negative"]),
+            ("P50", kpi_p50, tk["accent"]),
+            ("P90", kpi_p90, tk["positive"]),
         ]):
             # alternate top/bottom so labels don't overlap when percentiles are close
             pos = "top" if i % 2 == 0 else "bottom"
@@ -1450,12 +1502,10 @@ with page:
                 annotation_position=pos
             )
 
-        fig_hist.update_layout(
-            xaxis_title=y_title, yaxis_title="Number of paths",
-            height=300, showlegend=False,
-            margin=dict(l=10, r=10, t=30, b=10),
-        )
-        st.plotly_chart(fig_hist, use_container_width=True)
+        fig_hist.update_layout(**base_layout(tk, height=300))
+        fig_hist.update_xaxes(title_text=y_title)
+        fig_hist.update_yaxes(title_text="Number of paths")
+        chart(fig_hist, "outlook_hist")
 
         st.divider()
 
@@ -1520,7 +1570,7 @@ with page:
             st.caption("Bear case uses nominal earnings growth directly because the "
                        "standard identity (real growth + inflation) breaks down in crisis.")
 
-    with tab_goals:
+    if selected == "goals":
         st.subheader("Goal-based investing planner")
         st.caption(
             "Define a real financial goal and see what it takes to get there. "
@@ -1740,7 +1790,7 @@ with page:
         year_ticks(fig_goal, list(goal_proj["Label"]))
         st.plotly_chart(fig_goal, theme=None, config=PLOTLY_CONFIG,
                         key="goal_growth_chart", use_container_width=True)
-    with tab_context:
+    if selected == "context":
         st.subheader("Market context")
         st.caption("Sector rotation and historical market events that shaped KSE-100 returns.")
 
@@ -1875,7 +1925,7 @@ with page:
                 st.info("Stock data not available. Visit the Basket tab to load the frontier data.")
         except Exception as e:
             st.warning(f"Sector rotation unavailable: {e}")
-    with tab_basket:
+    if selected == "basket":
         st.subheader("Build a basket")
         st.caption("Replace the index with a basket you chose. See what that does to "
                    "return, drawdown and dividend income. Analysis tool, not a "
@@ -2514,7 +2564,7 @@ with page:
                         fig_div.add_trace(go.Scatter(
                             x=dc["n_stocks"], y=dc["p10_volatility"],
                             mode="lines", line=dict(width=0), fill="tonexty",
-                            fillcolor="rgba(201, 100, 66, 0.12)",
+                            fillcolor=rgba(tk["accent"], 0.12),
                             name="P10–P90 range", hoverinfo="skip"
                         ))
 
@@ -2522,7 +2572,7 @@ with page:
                         fig_div.add_trace(go.Scatter(
                             x=dc["n_stocks"], y=dc["avg_volatility"],
                             mode="lines+markers",
-                            line=dict(color="#c96442", width=2.5),
+                            line=dict(color=tk["accent"], width=2.5),
                             marker=dict(size=6),
                             name="Average volatility",
                             hovertemplate="%{x} stocks: %{y:.1%} volatility<extra></extra>"
@@ -2536,23 +2586,19 @@ with page:
                                 x=[len(selected)],
                                 y=[basket_stats_div["volatility"]],
                                 mode="markers+text",
-                                marker=dict(size=14, color="#c96442", symbol="circle",
-                                            line=dict(color="white", width=2)),
+                                marker=dict(size=14, color=tk["accent"], symbol="circle",
+                                            line=dict(color=tk["bg"], width=2)),
                                 name="Your basket",
                                 text=["Your basket"],
                                 textposition="top center",
-                                textfont=dict(color="#c96442", size=11),
+                                textfont=dict(color=tk["accent"], size=11),
                                 hovertemplate="Your basket<br>Stocks: %{x}<br>Vol: %{y:.1%}<extra></extra>"
                             ))
 
-                        fig_div.update_layout(
-                            xaxis_title="Number of stocks in portfolio",
-                            yaxis_title="Annualized volatility",
-                            height=350, hovermode="x unified",
-                            legend=dict(orientation="h", yanchor="bottom", y=1.02),
-                            margin=dict(l=10, r=10, t=10, b=10),
-                        )
-                        st.plotly_chart(fig_div, use_container_width=True)
+                        fig_div.update_layout(**base_layout(tk, height=350, legend=True))
+                        fig_div.update_xaxes(title_text="Number of stocks in portfolio")
+                        fig_div.update_yaxes(title_text="Annualized volatility")
+                        chart(fig_div, "div_curve")
 
                         st.info(
                             f"**Key insight:** A single stock has an average volatility of "
@@ -2589,42 +2635,42 @@ with page:
                             x=efficient["volatility"],
                             y=efficient["return"],
                             mode="lines",
-                            line=dict(color="#c96442", width=2.5),
+                            line=dict(color=tk["accent"], width=2.5),
                             name="Efficient frontier",
                             hovertemplate="Vol: %{x:.1%}<br>Return: %{y:.1%}<extra></extra>"
                         ))
 
-                        # Individual stocks
+                        # Individual stocks — muted circles
                         fig_front.add_trace(go.Scatter(
                             x=ss["volatility"], y=ss["return"],
                             mode="markers",
-                            marker=dict(size=8, color="#8a8580", opacity=0.7),
+                            marker=dict(size=8, color=tk["muted"], opacity=0.7),
                             name="Individual stocks",
                             text=ss["ticker"],
                             hovertemplate="%{text}<br>Vol: %{x:.1%}<br>Return: %{y:.1%}<extra></extra>"
                         ))
 
-                        # Equal-weight portfolio
+                        # Equal-weight portfolio — positive star
                         fig_front.add_trace(go.Scatter(
                             x=[ew["volatility"]], y=[ew["return"]],
                             mode="markers",
-                            marker=dict(size=14, color="#5a7a4a", symbol="star",
-                                        line=dict(color="white", width=1)),
+                            marker=dict(size=14, color=tk["positive"], symbol="star",
+                                        line=dict(color=tk["bg"], width=1)),
                             name="Equal-weight (all stocks)",
                             hovertemplate="Equal-weight<br>Vol: %{x:.1%}<br>Return: %{y:.1%}<extra></extra>"
                         ))
 
-                        # Minimum variance portfolio
+                        # Minimum variance portfolio — bear diamond
                         fig_front.add_trace(go.Scatter(
                             x=[mv["volatility"]], y=[mv["return"]],
                             mode="markers",
-                            marker=dict(size=12, color="#3f6fb5", symbol="diamond",
-                                        line=dict(color="white", width=1)),
+                            marker=dict(size=12, color=tk["bear"], symbol="diamond",
+                                        line=dict(color=tk["bg"], width=1)),
                             name="Minimum variance",
                             hovertemplate="Min variance<br>Vol: %{x:.1%}<br>Return: %{y:.1%}<extra></extra>"
                         ))
 
-                        # User's selected basket
+                        # User's selected basket — accent circle
                         from kse.frontier import compute_portfolio_stats
                         basket_stats = compute_portfolio_stats(fd["returns"], weights_basket)
                         if basket_stats:
@@ -2632,13 +2678,13 @@ with page:
                                 x=[basket_stats["volatility"]],
                                 y=[basket_stats["return"]],
                                 mode="markers",
-                                marker=dict(size=14, color="#c96442", symbol="circle",
-                                            line=dict(color="white", width=2)),
+                                marker=dict(size=14, color=tk["accent"], symbol="circle",
+                                            line=dict(color=tk["bg"], width=2)),
                                 name="Your basket",
                                 hovertemplate="Your basket<br>Vol: %{x:.1%}<br>Return: %{y:.1%}<extra></extra>"
                             ))
 
-                        # Recommended portfolio
+                        # Recommended portfolio — accent cross
                         from kse.frontier import get_recommended_portfolio
                         screen_df_rec = screen_all()
                         rec = get_recommended_portfolio(fd["returns"], screen_df_rec)
@@ -2646,21 +2692,16 @@ with page:
                             fig_front.add_trace(go.Scatter(
                                 x=[rec["volatility"]], y=[rec["return"]],
                                 mode="markers",
-                                marker=dict(size=14, color="#9b59b6", symbol="cross",
-                                            line=dict(color="white", width=2)),
+                                marker=dict(size=14, color=tk["accent"], symbol="cross",
+                                            line=dict(color=tk["bg"], width=2)),
                                 name="Recommended (Min Var)",
                                 hovertemplate="Recommended<br>Vol: %{x:.1%}<br>Return: %{y:.1%}<extra></extra>"
                             ))
 
-                        fig_front.update_layout(
-                            xaxis_title="Annualized volatility (risk)",
-                            yaxis_title="Annualized expected return",
-                            height=400, hovermode="closest",
-                            legend=dict(orientation="h", yanchor="bottom", y=1.02),
-                            margin=dict(l=10, r=10, t=10, b=10),
-                            clickmode='event+select'  # Enables click-to-highlight
-                        )
-                        st.plotly_chart(fig_front, use_container_width=True)
+                        fig_front.update_layout(**base_layout(tk, height=400, legend=True, hovermode="closest"))
+                        fig_front.update_xaxes(title_text="Annualized volatility (risk)")
+                        fig_front.update_yaxes(title_text="Annualized expected return")
+                        chart(fig_front, "efficient_frontier")
 
                         st.warning(
                             "**Methodological caveat:** This frontier is based on historical "

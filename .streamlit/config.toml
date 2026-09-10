@@ -18,8 +18,8 @@ baseFontSize = 16
 baseFontWeight = 400
 metricValueFontSize = "1.875rem"
 metricValueFontWeight = 600
-baseRadius = "0.5rem"
-buttonRadius = "0.5rem"
+baseRadius = "1.25rem"
+buttonRadius = "999px"
 showWidgetBorder = false
 linkUnderline = false
 

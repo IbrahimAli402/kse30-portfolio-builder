@@ -2684,7 +2684,7 @@ with page:
                             ))
 
                         fig_front.update_layout(**base_layout(tk, height=400, legend=True, hovermode="closest"))
-                        fig_front.update_layout(clickmode="none")
+                        fig_front.update_layout(clickmode="event+select")
                         fig_front.update_xaxes(title_text="Annualized volatility (risk)")
                         fig_front.update_yaxes(title_text="Annualized expected return")
                         chart(fig_front, "efficient_frontier")

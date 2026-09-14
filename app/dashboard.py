@@ -6,8 +6,9 @@ worst-time-to-start backtest, the 2010–2024 SIP) is computed at runtime from
 projections use the fixed scenario assumptions documented in
 ``docs/methodology.md``.
 
-Styling comes from ``.streamlit/config.toml`` (see DESIGN.md); this file adds
-no CSS.
+Styling comes from ``.streamlit/config.toml`` plus the single tokenised CSS
+layer in ``kse/design_system.py`` (see docs/DESIGN_SYSTEM.md). No other CSS
+lives in this file.
 """
 
 from __future__ import annotations
@@ -18,13 +19,11 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-from streamlit_option_menu import option_menu
-# ── Phase 2 imports ────────────────────────────────────────────────────
+
 import sys
-from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from kse.glossary import lookup as glossary_lookup
+from kse.glossary import answer as glossary_answer, suggestions as glossary_suggestions, DISCLAIMER as GLOSSARY_DISCLAIMER
 from kse.monte_carlo import run_monte_carlo, compute_percentiles, compute_probability_table
 from kse.scenarios import get_all_scenarios, DEFAULT_WEIGHTS, blend_scenarios
 from kse.blocks import expected_return, calculate_all_expected_returns
@@ -47,6 +46,10 @@ from kse.risk_metrics import (
     sector_concentration,
     correlation_regime_analysis,
 )
+from kse.design_system import (
+    TOKENS, FONT_SANS as FONT_STACK, theme_tokens, rgba, inject_css,
+    page_header, section, eyebrow, insight, band, hairline, footer, kbd_hint,
+)
 
 # ---------------------------------------------------------------------------
 # Page
@@ -57,6 +60,11 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# Temporary: clear all caches after design system update — remove after confirming
+if "cache_cleared" not in st.session_state:
+    st.cache_data.clear()
+    st.session_state["cache_cleared"] = True
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data" / "processed"
@@ -104,68 +112,42 @@ def load_fx():
 FX_DATA = load_fx()
 PKR_USD = FX_DATA["Rate"].iloc[-1] if FX_DATA is not None else 280
 
-# ---------------------------------------------------------------------------
-# Design tokens (DESIGN.md) — chart-side mirror of config.toml
-# ---------------------------------------------------------------------------
-TOKENS = {
-    "light": dict(
-        bg="#faf9f5", surface="#f5f3ed", text="#2d2a26", muted="#6b665e",
-                border="#e3dfd7", accent="#b0532f", positive="#27775a", negative="#a4412f",
-        bear="#3f6fb5", invested="#8a8580",
-    ),
-    "dark": dict(
-        bg="#1c1a17", surface="#252320", text="#e8e6e1", muted="#a8a298",
-        border="#3a3733", accent="#d97757", positive="#4fae88", negative="#d98a72",
-        bear="#7a9bd6", invested="#8a8580",
-    ),
-}
-FONT_STACK = "Instrument Sans, Aptos, Segoe UI, sans-serif"
+# Design tokens live in kse/design_system.py (mirrored in .streamlit/config.toml)
 TAB_META = {
-    "outlook": dict(label="Forecast", icon="🔮", lines=[
-        "A probabilistic ten-year forecast built from 5,000 simulated paths — "
-        "not a single guess, but a range of what could realistically happen.",
+    "outlook": dict(label="Forecast", lines=[
+        "A probabilistic ten-year forecast built from 5,000 simulated paths. "
+        "Not a single guess, but a range of what could realistically happen.",
     ]),
-    "goals": dict(label="Goals", icon="🎯", lines=[
-        "Work backward from a real target — university, retirement, a house — "
+    "goals": dict(label="Goals", lines=[
+        "Work backward from a real target (university, retirement, a house) "
         "to the monthly SIP and the odds of getting there.",
     ]),
-    "basket": dict(label="Basket", icon="🧺", lines=[
-        "Swap the index for your own picks from the KSE 30 — size positions "
+    "basket": dict(label="Basket", lines=[
+        "Swap the index for your own picks from the KSE 30, size positions "
         "against real trading liquidity, and compare two portfolios side by side.",
     ]),
-    "growth": dict(label="Growth", icon="📈", lines=[
-        "Projected forward and checked against 2010–2024 history — how your "
+    "growth": dict(label="Growth", lines=[
+        "Projected forward and checked against 2010-2024 history: how your "
         "monthly investment actually compounds.",
     ]),
-    "risk": dict(label="Risk", icon="⚠️", lines=[
+    "risk": dict(label="Risk", lines=[
         "Drawdowns, VaR, sector concentration, and what happens to your risk "
-        "in a crisis — the discomfort that comes with the returns.",
+        "in a crisis. The discomfort that comes with the returns.",
     ]),
-    "worst": dict(label="Worst case", icon="📉", lines=[
+    "worst": dict(label="Worst case", lines=[
         "A SIP started right at the market peak, just before the crash. "
         "Does rupee-cost averaging hold up?",
     ]),
-    "dividends": dict(label="Dividends", icon="💵", lines=[
+    "dividends": dict(label="Dividends", lines=[
         "Cash income at each milestone, and what reinvesting instead of "
         "spending it is worth over time.",
     ]),
-    "context": dict(label="Market context", icon="📊", lines=[
+    "context": dict(label="Market context", lines=[
         "Which sectors are leading or lagging right now, and the events "
         "that have moved the KSE-100 over the past 15 years.",
     ]),
 }
 TAB_ORDER = ["outlook", "goals", "basket", "growth", "risk", "worst", "dividends", "context"]
-
-
-def theme_tokens() -> dict:
-    kind = st.context.theme.type or "light"
-    return TOKENS["dark" if kind == "dark" else "light"]
-
-
-def rgba(hex_color: str, alpha: float) -> str:
-    h = hex_color.lstrip("#")
-    r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
-    return f"rgba({r},{g},{b},{alpha})"
 
 
 # ---------------------------------------------------------------------------
@@ -264,7 +246,8 @@ def run_sip(returns: pd.Series, monthly_amount: float, tx_cost_pct: float = 0.0)
     return df
 
 
-def project_sip(monthly_amount: float, tier: str, scenario: str, years: int) -> tuple[pd.DataFrame, dict]:
+def project_sip(monthly_amount: float, tier: str, scenario: str, years: int,
+                dividend_yield: float = ANNUAL_DIVIDEND_YIELD) -> tuple[pd.DataFrame, dict]:
     """Forward projection with fixed annual returns, fees, transaction costs and CGT."""
     months = years * 12
     t, s = TIERS[tier], SCENARIOS[scenario]
@@ -281,7 +264,7 @@ def project_sip(monthly_amount: float, tier: str, scenario: str, years: int) -> 
     df = pd.DataFrame(rows)
     df["Label"] = "Year " + df["Year"].astype(str)
     df["Profit"] = df["Portfolio_Value"] - df["Cumulative_Invested"]
-    df["Annual_Dividend"] = df["Portfolio_Value"] * ANNUAL_DIVIDEND_YIELD
+    df["Annual_Dividend"] = df["Portfolio_Value"] * dividend_yield
     df["Monthly_Dividend"] = df["Annual_Dividend"] / 12
     df["Transaction_Costs"] = monthly_amount * TX_COST_PCT * df["Year"] * 12
 
@@ -361,7 +344,7 @@ def dividend_milestones(df: pd.DataFrame, horizon: int) -> pd.DataFrame:
 PLOTLY_CONFIG = {"displayModeBar": False, "responsive": True}
 
 
-def base_layout(tk: dict, *, height: int = 340, legend: bool = False, hovermode: str = "x unified") -> dict:
+def base_layout(tk: dict, *, height: int = 340, legend: bool = False, hovermode: str = "x") -> dict:
     return dict(
         height=height,
         margin=dict(l=8, r=16, t=28 if legend else 12, b=8, pad=4),
@@ -375,9 +358,12 @@ def base_layout(tk: dict, *, height: int = 340, legend: bool = False, hovermode:
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, traceorder="normal",
                     font=dict(size=12, color=tk["text"]), itemwidth=30),
         xaxis=dict(showgrid=False, zeroline=False, linecolor=tk["border"], linewidth=1,
-                   tickfont=dict(color=tk["muted"]), ticks="", fixedrange=True, automargin=True),
+                   tickfont=dict(color=tk["muted"]), ticks="", fixedrange=True, automargin=True,
+                   showspikes=False, spikethickness=1, spikemode="across",
+                   spikecolor="rgba(168,162,152,0.25)", spikedash="dot", spikesnap="cursor"),
         yaxis=dict(gridcolor=tk["border"], gridwidth=1, zeroline=False, showline=False,
-                   tickfont=dict(color=tk["muted"]), ticks="", fixedrange=True, automargin=True),
+                   tickfont=dict(color=tk["muted"]), ticks="", fixedrange=True, automargin=True,
+                   showspikes=False),
     )
 
 
@@ -467,13 +453,12 @@ def dividend_chart(m: pd.DataFrame, tk: dict) -> go.Figure:
     fig = go.Figure(go.Bar(
         x=m["Label"], y=m["Annual_Dividend"], marker=dict(color=tk["accent"], cornerradius=4),
         width=0.22, text=[fmt_pkr(v, 1) for v in m["Annual_Dividend"]], textposition="outside",
-        textfont=dict(family=FONT_STACK, size=12, color=tk["text"]), cliponaxis=False,
-        hovertemplate="%{x}<br>%{customdata[0]} per year<br>%{customdata[1]} per month<extra></extra>",
-        customdata=np.column_stack([[fmt_pkr(v) for v in m["Annual_Dividend"]],
-                                    [fmt_pkr(v) for v in m["Monthly_Dividend"]]]),
+        textfont=dict(family=FONT_STACK, size=18, color=tk["text"]), cliponaxis=False,
+        hoverinfo="none",
     ))
     fig.update_layout(**base_layout(tk, hovermode="closest"), bargap=0.5)
     money_axis(fig, m["Annual_Dividend"].max() * 1.12)
+    fig.update_traces(textfont_size=18, textfont_color=tk["text"])
     return fig
 
 
@@ -492,7 +477,7 @@ def prob_loss_chart(p: pd.DataFrame, tk: dict) -> go.Figure:
         customdata=p["windows"],
     ))
     fig.update_layout(**base_layout(tk, height=300, hovermode="closest"))
-    fig.update_yaxes(range=[0, max(50, p["prob"].max() + 14)], ticksuffix="%", dtick=10)
+    fig.update_yaxes(range=[0, max(60, p["prob"].max() + 20)], ticksuffix="%", dtick=10)
     return fig
 
 
@@ -523,25 +508,77 @@ def drawdown_chart(ep: dict, tk: dict) -> go.Figure:
 # Small UI helpers
 # ---------------------------------------------------------------------------
 @st.dialog("Ask about this app", width="large")
-def search_dialog():
-    query = st.text_input(
-        "What does this mean?", placeholder="e.g. Sharpe ratio, VaR, CGT…",
-        key="search_query",
-    )
-    if query:
-        answer = glossary_lookup(query)
-        if answer:
-            st.markdown(answer)
-        else:
-            st.info(
-                "Not in the glossary yet. Try a shorter term (e.g. 'beta' "
-                "instead of a full sentence), or check the metric's tooltip."
-            )
-    st.caption("Educational definitions only — not investment advice.")
+def search_dialog() -> None:
+    if "_chip_selected" in st.session_state:
+        st.session_state["search_query"] = st.session_state.pop("_chip_selected")
 
-def insight(text: str) -> None:
-    with st.container(border=True):
-        st.markdown(f"**Key insight** · {text}")
+    query = st.text_input(
+        "What does this mean?", placeholder="e.g. Sharpe ratio, VaR, what is this app for…",
+        key="search_query", label_visibility="collapsed",
+    )
+
+    if not query:
+        st.caption("Try a term from any chart, or a question about the app itself.")
+        chips = glossary_suggestions()
+        cols = st.columns(min(len(chips), 3))
+        for i, chip in enumerate(chips):
+            with cols[i % len(cols)]:
+                if st.button(chip, key=f"chip_{i}", use_container_width=True):
+                    st.session_state["_chip_selected"] = chip
+                    st.rerun()
+    else:
+        hit = glossary_answer(query)
+        if hit:
+            related = ""
+            if hit["related"]:
+                related = '<p class="kse-related">Related: ' + " · ".join(hit["related"]) + "</p>"
+            kind = "Term" if hit["kind"] == "term" else "About this app"
+            st.markdown(
+                f'<div class="kse-answer"><p class="kse-eyebrow">{kind}</p>'
+                f'<h4>{hit["title"]}</h4><p>{hit["body"]}</p>{related}</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.info("Not in the glossary yet. Try a shorter term, or browse all terms below.")
+            chips = glossary_suggestions()
+            cols = st.columns(min(len(chips), 3))
+            for i, chip in enumerate(chips):
+                with cols[i % len(cols)]:
+                    if st.button(chip, key=f"browse_{i}", use_container_width=True):
+                        st.session_state["_chip_selected"] = chip
+                        st.rerun()
+        st.caption(GLOSSARY_DISCLAIMER)
+
+
+# ── Suitability: a first-visit dialog, not an always-open expander ─────
+@st.dialog("Before you begin", width="small")
+def suitability_dialog() -> None:
+    st.caption("Three questions to suggest a risk tier. You can skip and choose manually.")
+    questions = get_suitability_questions()
+    answers = {}
+    for q in questions:
+        answers[q["id"]] = st.radio(q["question"], q["options"], key=f"suit_{q['id']}", index=None)
+    col_skip, col_submit = st.columns(2)
+    if col_skip.button("Skip", key="suit_skip", width="stretch"):
+        st.session_state["suitability_done"] = True
+        st.rerun()
+    if col_submit.button("Continue", key="suit_submit", type="primary", width="stretch"):
+        answer_indices = {q["id"]: q["options"].index(answers[q["id"]])
+                          for q in questions if answers[q["id"]] is not None}
+        if len(answer_indices) == len(questions):
+            result = assess_suitability(answer_indices)
+            st.session_state["suitability_done"] = True
+            st.session_state["suitability_tier"] = result["recommended_tier"]
+            st.session_state["suitability_reason"] = result["tier_reason"]
+            amount_map = {"Under PKR 50,000": 25000, "PKR 50,000 - 100,000": 75000,
+                          "PKR 100,000 - 200,000": 150000, "Above PKR 200,000": 200000}
+            horizon_map = {"Short (1-3 years)": 5, "Medium (3-7 years)": 7, "Long (7+ years)": 15}
+            st.session_state["suitability_amount"] = amount_map.get(answers["income"], AMOUNT_DEFAULT)
+            st.session_state["suitability_horizon"] = horizon_map.get(answers["horizon"], HORIZON_DEFAULT)
+            st.session_state["apply_suitability"] = True
+            st.rerun()
+        else:
+            st.warning("Please answer all three questions, or skip.")
 
 
 def table_view(df: pd.DataFrame, label: str = "Table view") -> None:
@@ -552,184 +589,109 @@ def table_view(df: pd.DataFrame, label: str = "Table view") -> None:
 def chart(fig: go.Figure, key: str) -> None:
     st.plotly_chart(fig, theme=None, config=PLOTLY_CONFIG, key=key, width="stretch")
 
-
 # ---------------------------------------------------------------------------
 # Page body
 # ---------------------------------------------------------------------------
 tk = theme_tokens()
-# ── Sidebar navigation ─────────────────────────────────────────────────
+inject_css(tk)
+
+APP_NAME = "KSE 100 Portfolio Builder"
+
+# ── Session defaults ───────────────────────────────────────────────────
+st.session_state.setdefault("suitability_done", False)
+st.session_state.setdefault("ctrl_amount", AMOUNT_DEFAULT)
+st.session_state.setdefault("ctrl_tier", "Aggressive")
+st.session_state.setdefault("ctrl_horizon", HORIZON_DEFAULT)
+if st.session_state.get("apply_suitability", False):
+    st.session_state["ctrl_amount"] = st.session_state["suitability_amount"]
+    st.session_state["ctrl_tier"] = st.session_state["suitability_tier"]
+    st.session_state["ctrl_horizon"] = st.session_state["suitability_horizon"]
+    st.session_state["apply_suitability"] = False
+
+# ── Sidebar: wordmark, nav, search, your plan ──────────────────────────
 with st.sidebar:
-    selected_label = option_menu(
-        menu_title="KSE 100",
-        options=[TAB_META[k]["label"] for k in TAB_ORDER],
-        icons=["graph-up-arrow", "bullseye", "basket", "bar-chart-line",
-               "exclamation-triangle", "graph-down-arrow", "cash-coin", "diagram-3"],
-        default_index=0,
-        styles={
-            "container": {"background-color": "transparent", "padding": "0"},
-            "nav-link": {
-                "font-family": FONT_STACK, "font-size": "15px",
-                "color": tk["muted"], "background-color": "transparent",
-                "margin": "2px 0", "border-radius": "8px",
-            },
-            "nav-link:hover": {"background-color": rgba(tk["accent"], 0.06)},
-            "nav-link-selected": {
-                "background-color": rgba(tk["accent"], 0.12),
-                "color": tk["accent"], "font-weight": "600",
-            },
-            "icon": {"font-size": "15px"},
-        },
+    eyebrow("KSE 100")
+    _nav_labels = [TAB_META[k]["label"] for k in TAB_ORDER]
+    _nav_idx = st.session_state.get("nav_index", 0)
+    selected_label = st.radio(
+        "Navigation",
+        _nav_labels,
+        index=_nav_idx,
+        key="nav_radio",
+        label_visibility="collapsed",
     )
-selected = TAB_ORDER[[TAB_META[k]["label"] for k in TAB_ORDER].index(selected_label)]
+    st.session_state["nav_index"] = _nav_labels.index(selected_label)
+    if st.button("Search or ask", icon=":material/search:", key="open_search",
+                 shortcut="Ctrl+K", width="stretch") or st.session_state.get("_chip_selected"):
+        search_dialog()
 
-# ── Search palette ──────────────────────────────────────────────────
-if st.sidebar.button("🔍 Search", use_container_width=True):
-    search_dialog()
-
-st.sidebar.divider()
-outer = st.container(horizontal=True, horizontal_alignment="center")
-page = outer.container(width=960)
-
-with page:
-    st.title("KSE 100 Portfolio Builder")
-    
-    # ── Suitability Questionnaire (collapsible) ────────────────────────
-    if "suitability_done" not in st.session_state:
-        st.session_state["suitability_done"] = False
-
-    if not st.session_state["suitability_done"]:
-        with st.expander("Before you begin — quick suitability check (3 questions)", expanded=True):
-            st.caption("This helps us suggest a risk tier. You can skip this and choose manually.")
-            questions = get_suitability_questions()
-            answers = {}
-            for q in questions:
-                answers[q["id"]] = st.radio(
-                    q["question"], q["options"],
-                    key=f"suit_{q['id']}", index=None
-                )
-
-            col_skip, col_submit = st.columns([1, 1])
-            with col_skip:
-                if st.button("Skip", key="suit_skip"):
-                    st.session_state["suitability_done"] = True
-                    st.rerun()
-            with col_submit:
-                if st.button("Submit", key="suit_submit", type="primary"):
-                    # Convert selected option strings to indices
-                    answer_indices = {}
-                    for q in questions:
-                        sel = answers[q["id"]]
-                        if sel is not None:
-                            answer_indices[q["id"]] = q["options"].index(sel)
-
-                    if len(answer_indices) == len(questions):
-                        result = assess_suitability(answer_indices)
-                        st.session_state["suitability_done"] = True
-                        st.session_state["suitability_tier"] = result["recommended_tier"]
-                        st.session_state["suitability_reason"] = result["tier_reason"]
-
-                        # Map answers to dashboard controls
-                        amount_map = {
-                            "Under PKR 50,000": 25000,
-                            "PKR 50,000 - 100,000": 75000,
-                            "PKR 100,000 - 200,000": 150000,
-                            "Above PKR 200,000": 200000,
-                        }
-                        horizon_map = {
-                            "Short (1-3 years)": 5,
-                            "Medium (3-7 years)": 7,
-                            "Long (7+ years)": 15,
-                        }
-                        st.session_state["suitability_amount"] = amount_map.get(answers["income"], AMOUNT_DEFAULT)
-                        st.session_state["suitability_horizon"] = horizon_map.get(answers["horizon"], HORIZON_DEFAULT)
-                        st.session_state["apply_suitability"] = True
-
-                        st.rerun()
-                    else:
-                        st.warning("Please answer all questions.")
-
-    elif "suitability_tier" in st.session_state:
-        with st.expander(f"Suitability assessment: {st.session_state['suitability_tier']}", expanded=False):
-            st.success(st.session_state["suitability_reason"])
-            st.info("Your risk tier, monthly amount, and time horizon have been set based on your answers. Adjust them anytime above.")
-            if st.button("Retake", key="suit_retake"):
-                st.session_state["suitability_done"] = False
-                st.rerun()
-
-    # ── Disclaimer banner ──────────────────────────────────────────────
-    st.warning(get_disclaimer("short"))
-    
-   
-    # ---- Controls ----------------------------------------------------------
-    st.space("small")
-
-    # Initialize widget defaults if not yet set
-    if "ctrl_amount" not in st.session_state:
-        st.session_state["ctrl_amount"] = AMOUNT_DEFAULT
-    if "ctrl_tier" not in st.session_state:
-        st.session_state["ctrl_tier"] = "Aggressive"
-    if "ctrl_horizon" not in st.session_state:
-        st.session_state["ctrl_horizon"] = HORIZON_DEFAULT
-
-    # Apply suitability assessment results to controls
-    if st.session_state.get("apply_suitability", False):
-        st.session_state["ctrl_amount"] = st.session_state["suitability_amount"]
-        st.session_state["ctrl_tier"] = st.session_state["suitability_tier"]
-        st.session_state["ctrl_horizon"] = st.session_state["suitability_horizon"]
-        st.session_state["apply_suitability"] = False
-
+    st.divider()
+    eyebrow("Your plan")
     monthly_amount = st.select_slider(
         "Monthly investment", options=list(range(AMOUNT_MIN, AMOUNT_MAX + 1, AMOUNT_STEP)),
         format_func=fmt_pkr, key="ctrl_amount",
         help="Deposited on the last trading day of every month.",
     )
-    c1, c2, c3 = st.columns([1.45, 1, 1], gap="large")
-    with c1:
-        tier = st.segmented_control(
-            "Risk tier", list(TIERS), required=True, width="stretch",
-            key="ctrl_tier",
-            help="Conservative: 60% equity / 40% income fund (lower risk). Moderate: 80/20. Aggressive: 100% equity (highest growth potential)."
-        )
-        st.caption(f"{TIERS[tier]['equity']:.0%} equity · {TIERS[tier]['income']:.0%} income fund")
-    with c2:
-        horizon = st.slider("Time horizon (years)", HORIZON_MIN, HORIZON_MAX, key="ctrl_horizon")
-    with c3:
-        scenario = st.segmented_control(
-            "Scenario", list(SCENARIOS), default="Base", required=True, width="stretch",
-            help="Bull: IMF programme succeeds, reforms proceed. Base: Muddle through, adequate growth. Bear: BoP shock, high inflation."
-        )
-        st.caption(f"{SCENARIOS[scenario]['equity_return']:.0%} equity · {SCENARIOS[scenario]['income_return']:.0%} income, per year")
+    tier = st.radio(
+        "Risk tier", list(TIERS), key="ctrl_tier", horizontal=True,
+        help="Conservative: 60% equity / 40% income fund. Moderate: 80/20. Aggressive: 100% equity.",
+    )
+    st.caption(f"{TIERS[tier]['equity']:.0%} equity · {TIERS[tier]['income']:.0%} income fund")
+    horizon = st.slider("Time horizon (years)", HORIZON_MIN, HORIZON_MAX, key="ctrl_horizon")
+    scenario = st.segmented_control(
+        "Scenario", list(SCENARIOS), default="Base", required=True, width="stretch",
+        help="Bull: IMF programme succeeds, reforms proceed. Base: muddle through. Bear: BoP shock, high inflation.",
+    )
+    st.caption(f"{SCENARIOS[scenario]['equity_return']:.0%} equity · "
+               f"{SCENARIOS[scenario]['income_return']:.0%} income, per year")
 
+    if st.session_state.get("suitability_tier"):
+        st.divider()
+        eyebrow("Suitability")
+        st.caption(f"Suggested tier: **{st.session_state['suitability_tier']}**. "
+                   f"{st.session_state['suitability_reason']}")
+        if st.button("Retake", key="suit_retake"):
+            st.session_state["suitability_done"] = False
+            st.rerun()
+
+selected = TAB_ORDER[[TAB_META[k]["label"] for k in TAB_ORDER].index(selected_label)]
+outer = st.container(horizontal=True, horizontal_alignment="center")
+page = outer.container(width=960)
+
+if not st.session_state["suitability_done"]:
+    st.session_state["suitability_done"] = True
+    suitability_dialog()
+
+with page:
     # ---- Model runs --------------------------------------------------------
-    proj, stats = project_sip(monthly_amount, tier, scenario, horizon)
-    runs = {s: project_sip(monthly_amount, tier, s, horizon) for s in SCENARIOS}
+    _active_yield = st.session_state.get("basket_dividend_yield", ANNUAL_DIVIDEND_YIELD)
+    proj, stats = project_sip(monthly_amount, tier, scenario, horizon, _active_yield)
+    runs = {s: project_sip(monthly_amount, tier, s, horizon, _active_yield) for s in SCENARIOS}
     tier_rets = RETS[tier]
     risk = RISK.loc[tier]
     episode = drawdown_episode(tier_rets)
     tr_episode = drawdown_episode(TR["Total_Return"])
-    worst = run_sip(tier_rets[tr_episode["peak"]:], monthly_amount)  # gross of tx costs, as in notebook 03
-    history = run_sip(tier_rets, monthly_amount, TX_COST_PCT)  # net of tx costs, as in notebook 04
+    worst = run_sip(tier_rets[tr_episode["peak"]:], monthly_amount)
+    history = run_sip(tier_rets, monthly_amount, TX_COST_PCT)
     milestones = dividend_milestones(proj, horizon)
 
-    # ---- KPI row -----------------------------------------------------------
-    st.divider()
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Total invested", fmt_pkr(stats["total_invested"]),
-              f"{fmt_pkr(monthly_amount)} × {horizon * 12} months", delta_color="off", delta_arrow="off")
-    k2.metric("Portfolio value", fmt_pkr(stats["final_value"]), f"{stats['return_pct']:+.0f}% on invested")
-    k3.metric("Annual dividend", fmt_pkr(proj["Annual_Dividend"].iloc[-1]),
-              f"at year {horizon} · {ANNUAL_DIVIDEND_YIELD:.0%} yield", delta_color="off", delta_arrow="off")
-    k4.metric("Max drawdown", f"{risk['Max_Drawdown_%']:.1f}%",
-              f"{risk['Annual_Volatility_%']:.1f}% volatility · Sortino {risk['Sortino_Ratio']:.2f}",
-              delta_color="off", delta_arrow="off",
-              help="Max Drawdown: The largest percentage drop from a peak to a trough. Volatility: How much the returns swing month-to-month. Sortino Ratio: A measure of risk-adjusted return (higher is better).")
-    st.divider()
-
-    # ---- Tabs --------------------------------------------------------------
-        # ---- Dynamic per-tab header ─────────────────────────────────────────
+    # ---- Page header: wordmark eyebrow, tab as H1, one-line lede ---------
     meta = TAB_META[selected]
-    st.caption(f"**{meta['label'].upper()}**")
-    st.markdown(f"{meta['icon']} " + " ".join(meta["lines"]))
+    page_header(APP_NAME, meta["label"], " ".join(meta["lines"]))
+
+    # ---- KPI strip: one surface band, shared by every tab ----------------
+    with band("kpi"):
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Total invested", fmt_pkr(stats["total_invested"]),
+                  f"{fmt_pkr(monthly_amount)} × {horizon * 12} months", delta_color="off", delta_arrow="off")
+        k2.metric("Portfolio value", fmt_pkr(stats["final_value"]), f"{stats['return_pct']:+.0f}% on invested")
+        k3.metric("Annual dividend", fmt_pkr(proj["Annual_Dividend"].iloc[-1]),
+                  f"at year {horizon} · {_active_yield:.1%} yield", delta_color="off", delta_arrow="off")
+        k4.metric("Max drawdown", f"{risk['Max_Drawdown_%']:.1f}%",
+                  f"{risk['Annual_Volatility_%']:.1f}% volatility · Sortino {risk['Sortino_Ratio']:.2f}",
+                  delta_color="off", delta_arrow="off",
+                  help="Max drawdown: the largest fall from a peak to a trough. Volatility: how much monthly returns swing. Sortino: risk-adjusted return, higher is better.")
+    st.caption(f"{tier} tier · {scenario} scenario · {get_disclaimer('short')}")
 
     # ---- Tab content ────────────────────────────────────────────────────
     if selected == "growth":
@@ -742,15 +704,15 @@ with page:
             )
         with head:
             if view == "Projection":
-                st.subheader("Portfolio growth over time")
-                st.caption(f"Projected value versus cumulative invested capital · {tier} tier · {scenario} scenario.")
+                section("Portfolio growth over time",
+                    f"Projected value versus cumulative invested capital · {tier} tier · {scenario} scenario.")
             elif view == "Scenarios":
-                st.subheader("Bull, Base and Bear side by side")
-                st.caption("Same deposits, three return assumptions. The shaded band is the range of outcomes.")
+                section("Bull, Base and Bear side by side",
+                    "Same deposits, three return assumptions. The shaded band is the range of outcomes.")
             else:
-                st.subheader("What actually happened")
-                st.caption(f"{fmt_pkr(monthly_amount)} a month into the {tier} tier from {DATA_START:%b %Y}, "
-                           "net of 0.2% transaction costs. Real KSE 100 total returns, not a projection.")
+                section("What actually happened",
+                    f"{fmt_pkr(monthly_amount)} a month into the {tier} tier from {DATA_START:%b %Y}, "
+                    "net of 0.2% transaction costs. Real KSE 100 total returns, not a projection.")
 
         if view == "Projection":
             chart(growth_chart(proj, tk, x_col="Label"), "growth")
@@ -809,8 +771,9 @@ with page:
         table_view(yby, "Year-by-year projection")
 
     if selected == "dividends":
-        st.subheader("Dividend income at milestones")
-        st.caption(f"Annual cash dividends if not reinvested, at a {ANNUAL_DIVIDEND_YIELD:.0%} yield on portfolio value.")
+        _yield_source = "your basket" if abs(_active_yield - ANNUAL_DIVIDEND_YIELD) > 0.001 else "market average"
+        section("Dividend income at milestones",
+            f"Annual cash dividends if not reinvested, at a {_active_yield:.1%} yield ({_yield_source}) on portfolio value.")
         chart(dividend_chart(milestones, tk), "dividends")
         y10 = milestones[milestones["Year"] == 10]
         if not y10.empty:
@@ -832,18 +795,16 @@ with page:
         
         # ── DRIP Analysis ───────────────────────────────────────────────
         st.divider()
-        st.subheader("Dividend reinvestment (DRIP) vs cash")
-        st.caption(
+        section("Dividend reinvestment (DRIP) vs cash",
             f"If you reinvest dividends instead of taking them as cash, "
-            f"compounding accelerates. Based on {ANNUAL_DIVIDEND_YIELD:.0%} yield "
+            f"compounding accelerates. Based on {_active_yield:.1%} yield ({_yield_source}) "
             f"and {scenario} scenario return."
         )
-
         try:
             drip = drip_comparison(
                 monthly_amount=monthly_amount,
                 annual_return=SCENARIOS[scenario]["equity_return"],
-                annual_dividend_yield=ANNUAL_DIVIDEND_YIELD,
+                annual_dividend_yield=_active_yield,
                 annual_fee=ANNUAL_FEE,
                 tx_cost_pct=TX_COST_PCT,
                 horizon_years=horizon,
@@ -883,8 +844,7 @@ with page:
             fig_drip.update_layout(**base_layout(tk, legend=True, height=350))
             fig_drip.update_xaxes(title_text="Year", dtick=1)
             money_axis(fig_drip, max(ydf["DRIP_Portfolio"].max(), ydf["Cash_Portfolio"].max()))
-            st.plotly_chart(fig_drip, theme=None, config=PLOTLY_CONFIG,
-                            key="drip_chart", use_container_width=True)
+            chart(fig_drip, "drip_chart")
 
             insight(
                 f"Reinvesting dividends grows your portfolio to "
@@ -900,9 +860,9 @@ with page:
             st.warning(f"DRIP analysis unavailable: {e}")
 
     if selected == "risk":
-        st.subheader("Probability of losing money by holding period")
-        st.caption(f"Share of rolling windows with a negative total return · {tier} tier · "
-                   f"{DATA_START:%b %Y} – {DATA_END:%b %Y}.")
+        section("Probability of losing money by holding period",
+            f"Share of rolling windows with a negative total return · {tier} tier · "
+            f"{DATA_START:%b %Y} – {DATA_END:%b %Y}.")
         p = probability_of_loss(tier_rets)
         chart(prob_loss_chart(p, tk), "prob_loss")
         first_zero = p[p["prob"] == 0]["period"].iloc[0] if (p["prob"] == 0).any() else None
@@ -921,9 +881,9 @@ with page:
         pt["Probability of loss (%)"] = pt["Probability of loss (%)"].round(1)
         table_view(pt.drop(columns="months"))
 
-        st.space("medium")
-        st.subheader("Drawdown from peak")
-        st.caption(f"{tier} tier, net of fees. How far and for how long the portfolio sat below its previous high.")
+        hairline()
+        section("Drawdown from peak",
+            f"{tier} tier, net of fees. How far and for how long the portfolio sat below its previous high.")
         chart(drawdown_chart(episode, tk), "drawdown")
         rec_txt = (f"and did not regain that peak until {episode['recovery']:%B %Y} — "
                    f"{(episode['recovery'].year - episode['peak'].year) * 12 + episode['recovery'].month - episode['peak'].month} months later"
@@ -939,8 +899,7 @@ with page:
         st.divider()
 
         # ── VaR & CVaR ──────────────────────────────────────────────────
-        st.subheader("Value at Risk (VaR) & Conditional VaR (CVaR)")
-        st.caption(
+        section("Value at Risk (VaR) & Conditional VaR (CVaR)",
             f"VaR: the most you could lose in a bad month. "
             f"CVaR: the average loss if you're in that bad scenario. "
             f"· {tier} tier · {DATA_START:%b %Y} – {DATA_END:%b %Y}"
@@ -958,7 +917,7 @@ with page:
                     "VaR (parametric)": f"{data['var_parametric']:.2%}",
                     "CVaR (parametric)": f"{data['cvar_parametric']:.2%}",
                 })
-            st.dataframe(pd.DataFrame(var_rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(var_rows), width="stretch", hide_index=True)
 
             v95 = var_results[0.95]
             insight(
@@ -974,8 +933,7 @@ with page:
 
         # ── Stress Testing ──────────────────────────────────────────────
         st.divider()
-        st.subheader("Stress testing — historical crisis replay")
-        st.caption(
+        section("Stress testing — historical crisis replay",
             "How the KSE 100 performed during major Pakistani market crises. "
             "Portfolio-specific stress tests appear when you build a basket in the Basket tab."
         )
@@ -1007,7 +965,7 @@ with page:
                     "Recovery": f"{result['recovery_months']} mo" if result["recovery_months"] else "Not recovered",
                 })
 
-            st.dataframe(pd.DataFrame(stress_rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(stress_rows), width="stretch", hide_index=True)
 
             # Detail chart for selected crisis
             crisis_items = {r["label"]: n for n, r in stress.items() if "error" not in r}
@@ -1032,8 +990,7 @@ with page:
                 fig_stress.update_layout(**base_layout(tk, height=300))
                 fig_stress.update_yaxes(title_text="Value (indexed to 100)")
                 fig_stress.update_xaxes(dtick="M1", tickformat="%b %Y")
-                st.plotly_chart(fig_stress, theme=None, config=PLOTLY_CONFIG,
-                                key="stress_detail_chart", use_container_width=True)
+                chart(fig_stress, "stress_detail_chart")
 
                 insight(
                     f"During {detail['label']}, the KSE 100 fell "
@@ -1049,8 +1006,7 @@ with page:
 
         # ── Sector Concentration ────────────────────────────────────────
         st.divider()
-        st.subheader("Sector concentration")
-        st.caption(
+        section("Sector concentration",
             "Sector exposure of the recommended minimum-variance portfolio. "
             "High concentration in one sector means diversification is thin."
         )
@@ -1079,15 +1035,18 @@ with page:
 
                     # Sector pie chart
                     sw = sector_data["sector_weights"]
+                    _pie_colors = [rgba(tk["accent"], 0.95), rgba(tk["accent"], 0.70),
+                                   rgba(tk["accent"], 0.50), rgba(tk["accent"], 0.35),
+                                   rgba(tk["accent"], 0.20), rgba(tk["muted"], 0.30)]
                     fig_sec = go.Figure(go.Pie(
                         labels=sw.index, values=sw.values,
                         hole=0.4, textinfo="label+percent", textposition="outside",
-                        marker=dict(colors=[tk["accent"], tk["bear"], tk["positive"],
-                                            tk["negative"], tk["invested"], tk["muted"]]),
+                        marker=dict(colors=_pie_colors[:len(sw)]),
+                        hovertemplate="<b>%{label}</b><br>%{percent:.1%}<extra></extra>",
                     ))
-                    fig_sec.update_layout(**base_layout(tk, height=350, hovermode="closest"))
-                    st.plotly_chart(fig_sec, theme=None, config=PLOTLY_CONFIG,
-                                    key="sector_pie", use_container_width=True)
+                    fig_sec.update_layout(**base_layout(tk, height=400, hovermode="closest"))
+                    fig_sec.update_layout(margin=dict(l=8, r=40, t=20, b=20, pad=6))
+                    chart(fig_sec, "sector_pie")
 
                     if sector_data["concentration_flag"]:
                         st.warning(
@@ -1109,8 +1068,7 @@ with page:
 
                 # ── Correlation Regime Analysis ─────────────────────────────────
         st.divider()
-        st.subheader("Correlation regime analysis")
-        st.caption(
+        section("Correlation regime analysis",
             "Diversification erodes in crises — correlations spike when markets fall. "
             "This shows how much diversification benefit you actually keep in a crash."
         )
@@ -1194,8 +1152,7 @@ with page:
             
         # ── Multi-Asset Comparison ─────────────────────────────────────
         st.divider()
-        st.subheader("Multi-asset comparison")
-        st.caption(
+        section("Multi-asset comparison",
             "How KSE-100 compares to gold, USD, and real estate. "
             "Contextualizes equity allocation: is the risk worth it?"
         )
@@ -1218,7 +1175,7 @@ with page:
                 lambda x: f"{x:.1%}" if pd.notna(x) else "N/A"
             )
             display_df.columns = ["Asset", "Annual Return", "Volatility", "Sharpe", "Max Drawdown", "Cumulative Return"]
-            st.dataframe(display_df, use_container_width=True, hide_index=True)
+            st.dataframe(display_df, width="stretch", hide_index=True)
 
             # Bar chart: annual return vs volatility
             fig_asset = go.Figure()
@@ -1226,18 +1183,19 @@ with page:
                 x=asset_df["Asset"], y=asset_df["Annual_Return"],
                 name="Annual Return", marker_color=tk["accent"],
                 text=asset_df["Annual_Return"].map("{:.1%}".format),
-                textposition="outside",
+                textposition="outside", textfont=dict(size=11, color=tk["text"]),
+                hoverinfo="none",
             ))
             fig_asset.add_trace(go.Bar(
                 x=asset_df["Asset"], y=asset_df["Volatility"],
-                name="Volatility", marker_color=tk["bear"],
+                name="Volatility", marker_color=rgba(tk["accent"], 0.35),
                 text=asset_df["Volatility"].map("{:.1%}".format),
-                textposition="outside",
+                textposition="outside", textfont=dict(size=11, color=tk["text"]),
+                hoverinfo="none",
             ))
             fig_asset.update_layout(**base_layout(tk, legend=True, height=350))
-            fig_asset.update_yaxes(ticksuffix="%", title_text="Rate")
-            st.plotly_chart(fig_asset, theme=None, config=PLOTLY_CONFIG,
-                            key="multi_asset_chart", use_container_width=True)
+            fig_asset.update_yaxes(tickformat=".1%", title_text="Rate")
+            chart(fig_asset, "multi_asset_chart")
 
             # Insight
             kse_row = asset_df[asset_df["Asset"] == "KSE-100 (PKR)"].iloc[0]
@@ -1255,9 +1213,9 @@ with page:
         except Exception as e:
             st.warning(f"Multi-asset comparison unavailable: {e}")
     if selected == "worst":
-        st.subheader("The worst time to start")
-        st.caption(f"A SIP begun at the {tr_episode['peak']:%B %Y} market peak — right before the "
-                   f"{abs(tr_episode['depth_pct']):.0f}% fall — in the {tier} tier, held to {DATA_END:%b %Y}.")
+        section("The worst time to start",
+            f"A SIP begun at the {tr_episode['peak']:%B %Y} market peak, right before the "
+            f"{abs(tr_episode['depth_pct']):.0f}% fall, in the {tier} tier, held to {DATA_END:%b %Y}.")
         wx = worst.reset_index()
         chart(growth_chart(wx, tk, x_col="Date", hover_x="%b %Y", show_underwater=True), "worst")
         w_final, w_inv = worst["Portfolio_Value"].iloc[-1], worst["Cumulative_Invested"].iloc[-1]
@@ -1284,9 +1242,9 @@ with page:
         table_view(wt)
 
     if selected == "outlook":
-        st.subheader("Outlook 2026–2035")
-        st.caption("A probabilistic ten-year projection. 5,000 simulated paths, "
-                   "blended by scenario weight. Not a point forecast — a distribution.")
+        section("Outlook 2026–2035",
+            "A probabilistic ten-year projection. 5,000 simulated paths, "
+            "blended by scenario weight. Not a point forecast: a distribution.")
 
         # ── Controls ──────────────────────────────────────────────────────
         oc1, oc2, oc3, oc4 = st.columns([2, 1, 1, 1], gap="medium")
@@ -1317,7 +1275,7 @@ with page:
             )
 
         # ── What-If Sliders ──────────────────────────────────────────────
-        st.markdown("**What-if analysis**")
+        section("What-if analysis")
         st.caption("Drag the sliders to see how different inputs affect the forecast.")
 
         wi1, wi2, wi3 = st.columns([1, 1, 1], gap="medium")
@@ -1354,11 +1312,9 @@ with page:
 
         # Show comparison vs base inputs
         if wi_amount != monthly_amount or wi_horizon != 10 or wi_scenario != "Base":
-            st.info(
-                f"**What-if vs base:** "
-                f"Amount: {fmt_pkr(wi_amount)} vs {fmt_pkr(monthly_amount)} · "
-                f"Horizon: {wi_horizon} years vs 10 years · "
-                f"Scenario: {wi_scenario} vs Base"
+            st.caption(
+                f"What-if vs base: Amount {fmt_pkr(wi_amount)} vs {fmt_pkr(monthly_amount)}, "
+                f"horizon {wi_horizon} years vs 10, scenario {wi_scenario} vs Base."
             )
 
         # (Monte Carlo is now run above via what-if sliders)
@@ -1428,7 +1384,7 @@ with page:
         st.divider()
 
         # ── Fan Chart ─────────────────────────────────────────────────────
-        st.markdown("**Portfolio value distribution over time**")
+        section("Portfolio value distribution over time")
         st.caption(f"{mc_result['portfolio_paths'].shape[0]:,} simulated paths · "
                    f"{method} method · {view_mode} {currency}")
 
@@ -1480,24 +1436,25 @@ with page:
 
         y_title = "Portfolio value" if currency == "PKR" else "Portfolio value (USD)"
         fig_fan.update_layout(**base_layout(tk, height=400, legend=True))
+        fig_fan.update_layout(hovermode=False)
         fig_fan.update_xaxes(title_text="Years from start")
         fig_fan.update_yaxes(title_text=y_title)
         chart(fig_fan, "outlook_fan")
 
-        st.info(
-            f"**Key insight:** Over {horizon_outlook} years, the median outcome is "
+        insight(
+            f"Over {horizon_outlook} years, the median outcome is "
             f"{fmt_money(kpi_p50)} on {fmt_money(kpi_invested)} invested. But the range "
             f"is wide: there's a 10% chance of finishing below {fmt_money(kpi_p10)} "
             f"and a 10% chance of exceeding {fmt_money(kpi_p90)}. "
-            + ("These are real (inflation-adjusted) values — the nominal headline is higher."
+            + ("These are real (inflation-adjusted) values, so the nominal headline is higher."
                if view_mode == "Real" else
-               "Switch to **Real** view to see inflation-adjusted purchasing power.")
+               "Switch to Real view to see inflation-adjusted purchasing power.")
         )
 
         st.divider()
 
         # ── Terminal Wealth Histogram ─────────────────────────────────────
-        st.markdown("**Terminal wealth distribution**")
+        section("Terminal wealth distribution")
         st.caption("Final portfolio value across all simulated paths. "
                    "Vertical lines mark P10, P50 and P90.")
 
@@ -1510,23 +1467,24 @@ with page:
         fig_hist.add_trace(go.Histogram(
             x=terminal_adjusted, nbinsx=40,
             marker_color=tk["accent"], opacity=0.7,
-            name="Terminal wealth"
+            name="Terminal wealth",
+            hoverinfo="none",
         ))
 
-        for i, (label, val, color) in enumerate([
-            ("P10", kpi_p10, tk["negative"]),
-            ("P50", kpi_p50, tk["accent"]),
-            ("P90", kpi_p90, tk["positive"]),
-        ]):
-            # alternate top/bottom so labels don't overlap when percentiles are close
-            pos = "top" if i % 2 == 0 else "bottom"
+        _vline_colors = {"P10": tk["negative"], "P50": tk["accent"], "P90": tk["accent"]}
+        _vline_dashes = {"P10": "dot", "P50": "dash", "P90": "longdash"}
+        _vline_positions = {"P10": "top", "P50": "top", "P90": "top"}
+        _vline_shifts = {"P10": 0, "P50": 35, "P90": 70}
+        for label, val in [("P10", kpi_p10), ("P50", kpi_p50), ("P90", kpi_p90)]:
             fig_hist.add_vline(
-                x=val, line_dash="dash", line_color=color,
+                x=val, line_dash=_vline_dashes[label], line_color=_vline_colors[label],
                 annotation_text=f"{label}: {fmt_money(val)}",
-                annotation_position=pos
+                annotation_position=_vline_positions[label],
+                annotation=dict(yshift=_vline_shifts[label], font=dict(size=11, color=_vline_colors[label])),
             )
 
-        fig_hist.update_layout(**base_layout(tk, height=300))
+        fig_hist.update_layout(**base_layout(tk, height=320))
+        fig_hist.update_layout(margin=dict(l=8, r=16, t=90, b=35, pad=4))
         fig_hist.update_xaxes(title_text=y_title)
         fig_hist.update_yaxes(title_text="Number of paths")
         chart(fig_hist, "outlook_hist")
@@ -1534,7 +1492,7 @@ with page:
         st.divider()
 
         # ── Probability Table ─────────────────────────────────────────────
-        st.markdown("**Probability table**")
+        section("Probability table")
         st.caption("Honest probabilities, not point forecasts. "
                    "These update live with your inputs.")
 
@@ -1552,11 +1510,11 @@ with page:
             {"Outcome": "50%+ drawdown along the way",
              "Probability": f"{pt['drawdown_50pct']:.0%}"},
         ]
-        st.dataframe(pd.DataFrame(prob_data), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(prob_data), width="stretch", hide_index=True)
 
-        st.info(
-            f"**What this means:** A {pt['above_deposits']:.0%} chance of breaking even "
-            f"is not a guarantee — it means that across {mc_result['portfolio_paths'].shape[0]:,} "
+        insight(
+            f"A {pt['above_deposits']:.0%} chance of breaking even "
+            f"is not a guarantee. it means that across {mc_result['portfolio_paths'].shape[0]:,} "
             f"plausible futures, that fraction ended above deposits. The "
             f"{pt['drawdown_30pct']:.0%} chance of a 30%+ drawdown is the number to "
             f"prepare for psychologically: it doesn't mean you'll lose money, but it "
@@ -1590,13 +1548,12 @@ with page:
                     "Expected return": f"{ret:.1%}",
                 })
 
-            st.dataframe(pd.DataFrame(bb_data), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(bb_data), width="stretch", hide_index=True)
             st.caption("Bear case uses nominal earnings growth directly because the "
                        "standard identity (real growth + inflation) breaks down in crisis.")
 
     if selected == "goals":
-        st.subheader("Goal-based investing planner")
-        st.caption(
+        section("Goal-based investing planner",
             "Define a real financial goal and see what it takes to get there. "
             "The required monthly SIP, probability of success, and cost of delay "
             "are computed from the building block expected returns and Monte Carlo."
@@ -1676,7 +1633,7 @@ with page:
 
         # ── Monte Carlo probability ────────────────────────────────────
         st.divider()
-        st.markdown("**Probability of reaching your goal**")
+        section("Probability of reaching your goal")
         st.caption("Based on 5,000 Monte Carlo simulated paths using your scenario and tier.")
 
         try:
@@ -1724,12 +1681,13 @@ with page:
             fig_goal_prob = go.Figure(go.Bar(
                 x=prob_values, y=prob_labels, orientation="h",
                 text=[f"{p:.0%}" for p in prob_values], textposition="outside",
-                marker_color=[tk["positive"] if p > 0.5 else tk["negative"] for p in prob_values],
+                marker_color=[rgba(tk["accent"], 0.35 + 0.6 * p) for p in prob_values],
+                textfont=dict(size=12, color=tk["text"]),
+                hoverinfo="none",
             ))
             fig_goal_prob.update_layout(**base_layout(tk, height=300, hovermode="closest"))
-            fig_goal_prob.update_xaxes(range=[0, 1.15], ticksuffix="%", dtick=20)
-            st.plotly_chart(fig_goal_prob, theme=None, config=PLOTLY_CONFIG,
-                            key="goal_prob_chart", use_container_width=True)
+            fig_goal_prob.update_xaxes(range=[0, 1.15], tickformat=".0%")
+            chart(fig_goal_prob, "goal_prob_chart")
 
             if goal_prob["prob_reach_target"] >= 0.7:
                 goal_msg = "strong odds of success"
@@ -1739,7 +1697,7 @@ with page:
                 goal_msg = "low odds — you may need to increase contributions, extend the horizon, or adjust expectations"
 
             insight(
-                f"You have a **{goal_prob['prob_reach_target']:.0%}** chance of reaching "
+                f"You have a {goal_prob['prob_reach_target']:.0%} chance of reaching "
                 f"{fmt_pkr(target_amount, 0)} with {fmt_pkr(sip_result['monthly_sip'], 0)}/month "
                 f"over {goal_horizon} years ({goal_msg}). The median outcome is "
                 f"{fmt_pkr(goal_prob['median_terminal'], 0)}. If you fall short, the median "
@@ -1750,7 +1708,7 @@ with page:
 
         # ── Cost of delay ───────────────────────────────────────────────
         st.divider()
-        st.markdown("**Cost of delay**")
+        section("Cost of delay")
         st.caption("What happens if you wait 5 years to start? Same target, less time.")
 
         delay = cost_of_delay(
@@ -1784,12 +1742,12 @@ with page:
 
         # ── Growth projection chart ─────────────────────────────────────
         st.divider()
-        st.markdown("**Growth projection to your goal**")
+        section("Growth projection to your goal")
         st.caption(f"Projected portfolio value vs your target of {fmt_pkr(target_amount, 0)}.")
 
         # Build projection using the SIP engine
         goal_proj, goal_stats = project_sip(
-            sip_result["monthly_sip"], tier, goal_scenario, goal_horizon
+            sip_result["monthly_sip"], tier, goal_scenario, goal_horizon, _active_yield
         )
 
         fig_goal = go.Figure()
@@ -1812,14 +1770,13 @@ with page:
         fig_goal.update_layout(**base_layout(tk, legend=True, height=350))
         money_axis(fig_goal, max(goal_proj["Portfolio_Value"].max(), target_amount))
         year_ticks(fig_goal, list(goal_proj["Label"]))
-        st.plotly_chart(fig_goal, theme=None, config=PLOTLY_CONFIG,
-                        key="goal_growth_chart", use_container_width=True)
+        chart(fig_goal, "goal_growth_chart")
     if selected == "context":
-        st.subheader("Market context")
-        st.caption("Sector rotation and historical market events that shaped KSE-100 returns.")
+        section("Market context",
+            "Sector rotation and historical market events that shaped KSE-100 returns.")
 
         # ── Market Events Timeline ─────────────────────────────────────
-        st.markdown("**Historical market events**")
+        section("Historical market events")
         st.caption("Major political, IMF, and monetary events overlaid on KSE-100 cumulative returns.")
 
         try:
@@ -1839,21 +1796,20 @@ with page:
             fig_events.update_layout(**base_layout(tk, legend=True, height=400))
             fig_events.update_yaxes(title_text="Growth of PKR 100")
             fig_events.update_xaxes(dtick="M24", tickformat="%Y")
-            st.plotly_chart(fig_events, theme=None, config=PLOTLY_CONFIG,
-                            key="events_timeline", use_container_width=True)
+            chart(fig_events, "events_timeline")
 
             # Events table
             with st.expander("Event details"):
                 display_events = events_df.copy()
                 display_events["date"] = display_events["date"].dt.strftime("%b %Y")
                 display_events.columns = ["Date", "Label", "Category", "Description"]
-                st.dataframe(display_events, use_container_width=True, hide_index=True)
+                st.dataframe(display_events, width="stretch", hide_index=True)
         except Exception as e:
             st.warning(f"Market events unavailable: {e}")
 
         # ── Sector Rotation ─────────────────────────────────────────────
         st.divider()
-        st.markdown("**Sector rotation analysis**")
+        section("Sector rotation analysis")
         st.caption("Which sectors are leading and lagging? Relative strength vs the KSE-100 index.")
 
         try:
@@ -1870,90 +1826,111 @@ with page:
                 periods = ["1M_Return", "3M_Return", "6M_Return", "12M_Return"]
                 period_labels = ["1 Month", "3 Months", "6 Months", "12 Months"]
 
+                bar_colors = [rgba(tk["accent"], 0.35), rgba(tk["accent"], 0.55),
+                              rgba(tk["accent"], 0.75), rgba(tk["accent"], 0.95)]
                 fig_rot_bar = go.Figure()
-                for p, label in zip(periods, period_labels):
+                for i, (p, label) in enumerate(zip(periods, period_labels)):
                     if p in rotation.columns:
                         fig_rot_bar.add_trace(go.Bar(
                             x=rotation.index, y=rotation[p],
                             name=label,
+                            marker_color=bar_colors[i],
                             text=rotation[p].map("{:.1%}".format),
                             textposition="outside",
-                            textfont=dict(size=9),
+                            textfont=dict(size=9, color=tk["muted"]),
+                            hoverinfo="none",
                         ))
                 fig_rot_bar.update_layout(**base_layout(tk, legend=True, height=350))
-                fig_rot_bar.update_yaxes(ticksuffix="%", title_text="Return")
-                st.plotly_chart(fig_rot_bar, theme=None, config=PLOTLY_CONFIG,
-                                key="rotation_bar", use_container_width=True)
+                fig_rot_bar.update_yaxes(tickformat=".1%", title_text="Return")
+                chart(fig_rot_bar, "rotation_bar")
 
                 # Scatter plot: 1M RS vs 12M RS (rotation chart)
                 if "1M_RS" in rotation.columns and "12M_RS" in rotation.columns:
                     fig_scatter = go.Figure()
 
-                    # Add quadrant lines at 1.0
                     fig_scatter.add_hline(y=1.0, line_dash="dash", line_color=tk["muted"], opacity=0.3)
                     fig_scatter.add_vline(x=1.0, line_dash="dash", line_color=tk["muted"], opacity=0.3)
 
-                    # Color by momentum score
                     colors = [tk["positive"] if s > 1 else tk["negative"] for s in rotation["Momentum_Score"]]
 
                     fig_scatter.add_trace(go.Scatter(
                         x=rotation["1M_RS"], y=rotation["12M_RS"],
-                        mode="markers+text",
-                        marker=dict(size=14, color=colors, line=dict(color="white", width=1)),
+                        mode="markers",
+                        marker=dict(size=12, color=colors, line=dict(color=tk["bg"], width=1.5),
+                                    opacity=0.85),
                         text=rotation.index,
-                        textposition="top center",
-                        textfont=dict(size=10),
                         name="Sectors",
-                        hovertemplate="%{text}<br>1M RS: %{x:.2f}<br>12M RS: %{y:.2f}<extra></extra>",
+                        hovertemplate="<b>%{text}</b><br>1M RS: %{x:.2f}<br>12M RS: %{y:.2f}<extra></extra>",
                     ))
 
-                    # Quadrant annotations
-                    fig_scatter.add_annotation(x=1.3, y=1.3, text="Improving", showarrow=False,
-                                               font=dict(size=11, color=tk["positive"]))
-                    fig_scatter.add_annotation(x=0.7, y=1.3, text="Recovering", showarrow=False,
-                                               font=dict(size=11, color=tk["muted"]))
-                    fig_scatter.add_annotation(x=1.3, y=0.7, text="Weakening", showarrow=False,
-                                               font=dict(size=11, color=tk["muted"]))
-                    fig_scatter.add_annotation(x=0.7, y=0.7, text="Lagging", showarrow=False,
-                                               font=dict(size=11, color=tk["negative"]))
+                    fig_scatter.add_annotation(x=0.97, y=0.97, xref="paper", yref="paper",
+                                               text="Improving", showarrow=False,
+                                               font=dict(size=11, color=tk["positive"]),
+                                               xanchor="right", yanchor="top")
+                    fig_scatter.add_annotation(x=0.03, y=0.97, xref="paper", yref="paper",
+                                               text="Recovering", showarrow=False,
+                                               font=dict(size=11, color=tk["muted"]),
+                                               xanchor="left", yanchor="top")
+                    fig_scatter.add_annotation(x=0.97, y=0.03, xref="paper", yref="paper",
+                                               text="Weakening", showarrow=False,
+                                               font=dict(size=11, color=tk["muted"]),
+                                               xanchor="right", yanchor="bottom")
+                    fig_scatter.add_annotation(x=0.03, y=0.03, xref="paper", yref="paper",
+                                               text="Lagging", showarrow=False,
+                                               font=dict(size=11, color=tk["negative"]),
+                                               xanchor="left", yanchor="bottom")
 
-                    fig_scatter.update_layout(**base_layout(tk, height=400, hovermode="closest"))
+                    fig_scatter.update_layout(**base_layout(tk, height=450, hovermode="closest"))
+                    fig_scatter.update_layout(margin=dict(l=8, r=24, t=30, b=30, pad=6))
                     fig_scatter.update_xaxes(title_text="1-Month Relative Strength (vs KSE-100)")
                     fig_scatter.update_yaxes(title_text="12-Month Relative Strength (vs KSE-100)")
-                    st.plotly_chart(fig_scatter, theme=None, config=PLOTLY_CONFIG,
-                                    key="rotation_scatter", use_container_width=True)
+                    chart(fig_scatter, "rotation_scatter")
 
                     # Insight
                     best_sector = rotation.index[0]
                     worst_sector = rotation.index[-1]
                     insight(
-                        f"**{best_sector}** is the top-performing sector with a momentum score of "
+                        f"{best_sector} is the top-performing sector with a momentum score of "
                         f"{rotation.loc[best_sector, 'Momentum_Score']:.2f}. "
-                        f"**{worst_sector}** is the weakest with a score of "
+                        f"{worst_sector} is the weakest with a score of "
                         f"{rotation.loc[worst_sector, 'Momentum_Score']:.2f}. "
-                        f"Sectors in the 'Improving' quadrant (top-right) have strong short and long-term "
-                        f"momentum — they're leading the market."
+                        f"Sectors in the Improving quadrant (top-right) have strong short and long-term "
+                        f"momentum. They are leading the market."
                     )
 
                 # Detailed table
                 with st.expander("Detailed sector statistics"):
                     display_rot = rotation.copy()
+                    rename_map = {}
                     for col in display_rot.columns:
-                        if "RS" in col or "Score" in col:
+                        if col == "Sector":
+                            continue
+                        if "RS" in col:
                             display_rot[col] = display_rot[col].round(2)
-                        elif col != "Sector":
+                            new_name = col.replace("1M_", "1-Month ").replace("3M_", "3-Month ").replace("6M_", "6-Month ").replace("12M_", "12-Month ")
+                            new_name = new_name.replace("RS", "Relative Strength")
+                            rename_map[col] = new_name
+                        elif "Score" in col:
+                            display_rot[col] = display_rot[col].round(2)
+                            rename_map[col] = "Momentum Score"
+                        else:
                             display_rot[col] = display_rot[col].map("{:.1%}".format)
+                            new_name = col.replace("1M_", "1-Month ").replace("3M_", "3-Month ").replace("6M_", "6-Month ").replace("12M_", "12-Month ")
+                            rename_map[col] = new_name
+                    display_rot = display_rot.rename(columns=rename_map)
                     display_rot = display_rot.reset_index()
-                    st.dataframe(display_rot, use_container_width=True, hide_index=True)
+                    st.dataframe(display_rot, width="stretch", hide_index=True)
             else:
                 st.info("Stock data not available. Visit the Basket tab to load the frontier data.")
         except Exception as e:
             st.warning(f"Sector rotation unavailable: {e}")
     if selected == "basket":
-        st.subheader("Build a basket")
-        st.caption("Replace the index with a basket you chose. See what that does to "
-                   "return, drawdown and dividend income. Analysis tool, not a "
-                   "recommendation engine.")
+        section("Build a basket",
+            "Replace the index with a basket you chose. See what that does to "
+            "return, drawdown and dividend income. Analysis tool, not a "
+            "recommendation engine.")
+        st.caption("The KPI strip above reflects your risk tier and scenario, not this specific basket. "
+                   "Basket-specific metrics appear in the sections below.")
 
         try:
             # ── Load data ─────────────────────────────────────────────────
@@ -2006,7 +1983,7 @@ with page:
                                         })
                                 
                                 if rec_data:
-                                    st.dataframe(pd.DataFrame(rec_data), use_container_width=True, hide_index=True)
+                                    st.dataframe(pd.DataFrame(rec_data), width="stretch", hide_index=True)
                                     st.caption(f"Expected return: {rec['return']:.1%} · Volatility: {rec['volatility']:.1%}")
                                     st.info("To use this portfolio, select these 8 stocks in the picker above and "
                                             "use the Custom weights slider to match these weights.")
@@ -2050,7 +2027,7 @@ with page:
 
                 # ── Basket summary ─────────────────────────────────────────
                 st.divider()
-                st.markdown("**Basket composition**")
+                section("Basket composition")
 
                 basket_data = []
                 for ticker in selected_stocks:
@@ -2072,7 +2049,7 @@ with page:
                         "ROE": f"{row.get('roe', 0):.0%}" if pd.notna(row.get("roe")) else "—",
                     })
 
-                st.dataframe(pd.DataFrame(basket_data), use_container_width=True,
+                st.dataframe(pd.DataFrame(basket_data), width="stretch",
                              hide_index=True)
                 
                 # ── CSV Export ─────────────────────────────────────────
@@ -2120,8 +2097,11 @@ with page:
                         [stock_df[stock_df["ticker"] == t]["max_drawdown"].iloc[0] for t in valid_stocks],
                         weights=[weights_basket[t] for t in valid_stocks]
                     )
+                    # store basket yield for use in dividends tab and kpi strip
+                    st.session_state["basket_dividend_yield"] = avg_div
                 else:
                     avg_div = avg_pe = avg_beta = avg_dd = 0
+                    st.session_state["basket_dividend_yield"] = annual_dividend_yield
 
                 sector_weights = {}
                 for ticker in selected_stocks:
@@ -2149,7 +2129,7 @@ with page:
                 ))
                 # ── Rebalancing Guidance ───────────────────────────────────
                 st.divider()
-                st.markdown("**Rebalancing guidance**")
+                section("Rebalancing guidance")
                 st.caption("How far has your basket drifted from target weights? "
                            "When should you rebalance, and what does it cost?")
 
@@ -2177,7 +2157,7 @@ with page:
                     drift_df["Drift"] = drift_df["Drift"].map("{:+.1%}".format)
                     drift_df["Abs_Drift"] = drift_df["Abs_Drift"].map("{:.1%}".format)
                     drift_df = drift_df[["Ticker", "Target", "Current", "Drift", "Abs_Drift", "Breached"]]
-                    st.dataframe(drift_df, use_container_width=True, hide_index=True)
+                    st.dataframe(drift_df, width="stretch", hide_index=True)
 
                     portfolio_val = monthly_amount * 12 * horizon
                     cost = rebalancing_cost(
@@ -2216,10 +2196,11 @@ with page:
                     st.warning(f"Rebalancing analysis unavailable: {e}")
                 # ── Mutual Fund Comparison ─────────────────────────────────
                 st.divider()
-                st.markdown("**DIY vs Mutual Funds**")
+                section("DIY vs Mutual Funds")
                 st.caption(
                     "Why build your own portfolio? The fee difference compounds into "
-                    "a massive wealth gap over time."
+                    "a massive wealth gap over time. Uses the Base scenario expected return, "
+                    "not your specific basket's historical return."
                 )
 
                 try:
@@ -2247,7 +2228,7 @@ with page:
                     mf_df["Fee_Paid"] = mf_df["Fee_Paid"].map(fmt_pkr)
                     mf_df.columns = ["Option", "Gross Return", "Fee", "Net Return",
                                     "Terminal Value", "Total Invested", "Profit", "Fees Paid"]
-                    st.dataframe(mf_df, use_container_width=True, hide_index=True)
+                    st.dataframe(mf_df, width="stretch", hide_index=True)
 
                     fa = mf["fee_drag_analysis"]
                     mc1, mc2, mc3, mc4 = st.columns(4)
@@ -2273,7 +2254,7 @@ with page:
                     )
 
                     st.divider()
-                    st.markdown("**How fees destroy wealth**")
+                    section("How fees destroy wealth")
                     st.caption(f"Same {diy_return:.0%} gross return, different fee levels. "
                                f"The gap is wealth transferred from you to the fund manager.")
 
@@ -2292,12 +2273,12 @@ with page:
                         text=[fmt_pkr(v, 0) for v in fee_df["Terminal_Value"]],
                         textposition="outside",
                         cliponaxis=False,
+                        hoverinfo="none",
                     ))
                     fig_fee.update_layout(**base_layout(tk, height=350))
                     fig_fee.update_yaxes(title_text="Terminal portfolio value")
                     money_axis(fig_fee, fee_df["Terminal_Value"].max() * 1.1)
-                    st.plotly_chart(fig_fee, theme=None, config=PLOTLY_CONFIG,
-                                    key="fee_impact_chart", use_container_width=True)
+                    chart(fig_fee, "fee_impact_chart")
 
                     zero_fee = fee_df[fee_df["Fee"] == 0.0].iloc[0]
                     max_fee = fee_df[fee_df["Fee"] == fee_df["Fee"].max()].iloc[0]
@@ -2315,7 +2296,7 @@ with page:
                     st.warning(f"Mutual fund comparison unavailable: {e}")
                 # ── Liquidity Profile ───────────────────────────────────────
                 st.divider()
-                st.markdown("**Liquidity profile**")
+                section("Liquidity profile")
                 st.caption("How long would it take to exit each position? "
                            "Max weights are capped based on average daily volume.")
 
@@ -2336,7 +2317,7 @@ with page:
                     liq_display["Max_Weight"] = liq_display["Max_Weight"].map("{:.1%}".format)
                     liq_display["Days_To_Liquidate"] = liq_display["Days_To_Liquidate"].map("{:.1f}".format)
                     liq_display.columns = ["Avg Daily Volume", "Max Weight", "Days to Liquidate"]
-                    st.dataframe(liq_display, use_container_width=True, hide_index=True)
+                    st.dataframe(liq_display, width="stretch", hide_index=True)
 
                     illiquid = liq_scores[liq_scores["Days_To_Liquidate"] > 5]
                     if len(illiquid) > 0:
@@ -2362,12 +2343,12 @@ with page:
                     try:
                         screen_df = screen_all()
                         screen_df = screen_df[screen_df["Ticker"].isin(selected_stocks)]
-                        st.dataframe(screen_df, use_container_width=True, hide_index=True)
+                        st.dataframe(screen_df, width="stretch", hide_index=True)
                     except Exception as e:
                         st.warning(f"Screen scores unavailable: {e}")
                 # ── Basket vs KSE 100 Benchmark Comparison ─────────────────
                 st.divider()
-                st.markdown("**Basket vs KSE 100 benchmark**")
+                section("Basket vs KSE 100 benchmark")
                 st.caption(
                     "Full risk-return comparison: returns, risk, alpha, beta, "
                     "and capture ratios. Based on historical monthly returns."
@@ -2465,8 +2446,7 @@ with page:
                                 fig_bench.update_layout(**base_layout(tk, legend=True, height=350))
                                 fig_bench.update_yaxes(title_text="Growth of PKR 100")
                                 fig_bench.update_xaxes(dtick="M12", tickformat="%Y")
-                                st.plotly_chart(fig_bench, theme=None, config=PLOTLY_CONFIG,
-                                                key="benchmark_cumulative", use_container_width=True)
+                                chart(fig_bench, "benchmark_cumulative")
 
                                 if cmp["alpha"] > 0:
                                     alpha_msg = f"outperformed by {cmp['alpha']:.1%} per year"
@@ -2501,10 +2481,9 @@ with page:
                                                            line_color=tk["muted"])
                                         fig_roll.update_layout(**base_layout(tk, height=300))
                                         fig_roll.update_yaxes(title_text="Annualized alpha",
-                                                               ticksuffix="%")
+                                                            tickformat=".1%")
                                         fig_roll.update_xaxes(dtick="M12", tickformat="%Y")
-                                        st.plotly_chart(fig_roll, theme=None, config=PLOTLY_CONFIG,
-                                                        key="rolling_alpha", use_container_width=True)
+                                        chart(fig_roll, "rolling_alpha")
                                         st.caption(
                                             f"Rolling 36-month alpha. Positive values mean the basket "
                                             f"outperformed the index over that 3-year window. "
@@ -2529,7 +2508,7 @@ with page:
                                         {"Metric": "Tracking error", "Basket": f"{cmp['tracking_error']:.2%}", "KSE 100": "—"},
                                         {"Metric": "Information ratio", "Basket": f"{cmp['information_ratio']:.3f}", "KSE 100": "—"},
                                     ]
-                                    st.dataframe(pd.DataFrame(stats_data), use_container_width=True, hide_index=True)
+                                    st.dataframe(pd.DataFrame(stats_data), width="stretch", hide_index=True)
                             else:
                                 st.info("Not enough overlapping data between basket stocks and KSE-100 for benchmark comparison.")
                     else:
@@ -2538,7 +2517,7 @@ with page:
                     st.warning(f"Benchmark comparison unavailable: {e}")
                 # ── Diversification Curve ───────────────────────────────
                 st.divider()
-                st.markdown("**Diversification benefit**")
+                section("Diversification benefit")
                 st.caption("How portfolio volatility falls as you add more stocks. "
                            "Most of the benefit comes from the first 8–12 stocks.")
 
@@ -2591,19 +2570,19 @@ with page:
                         fig_div.update_yaxes(title_text="Annualized volatility")
                         chart(fig_div, "div_curve")
 
-                        st.info(
-                            f"**Key insight:** A single stock has an average volatility of "
+                        insight(
+                            f"A single stock has an average volatility of "
                             f"{dc['avg_volatility'].iloc[0]:.1%}. With 10 stocks, that drops "
                             f"to {dc[dc['n_stocks']==10]['avg_volatility'].iloc[0]:.1%}. "
-                            f"Adding more stocks beyond 12–15 provides diminishing returns — "
-                            f"the curve flattens."
+                            f"Adding more stocks beyond 12 to 15 provides diminishing returns. "
+                            f"The curve flattens."
                         )
                 except Exception as e:
                     st.warning(f"Diversification curve unavailable: {e}")
 
                 # ── Efficient Frontier ───────────────────────────────────
                 st.divider()
-                st.markdown("**Efficient frontier (Markowitz)**")
+                section("Efficient frontier (Markowitz)")
                 st.caption("The theoretical risk-return tradeoff. Each point on the curve "
                            "is the minimum-variance portfolio for that expected return. "
                            "**Caveat:** based on historical covariance — subject to estimation error.")
@@ -2690,17 +2669,17 @@ with page:
                         chart(fig_front, "efficient_frontier")
 
                         st.warning(
-                            "**Methodological caveat:** This frontier is based on historical "
+                            "Methodological caveat: This frontier is based on historical "
                             "covariance with ~60 monthly observations for 30 stocks. The sample "
-                            "covariance matrix is poorly estimated, making the 'optimal' portfolio "
-                            "unstable. In practice, equal-weight portfolios often outform "
+                            "covariance matrix is poorly estimated, making the optimal portfolio "
+                            "unstable. In practice, equal-weight portfolios often outperform "
                             "optimized portfolios out-of-sample. Use this as an educational tool, "
                             "not as investment advice."
                         )
 
                         # ── Interactive Portfolio Inspector ──────────────────
                         st.divider()
-                        st.markdown("**Inspect portfolio composition**")
+                        section("Inspect portfolio composition")
                         st.caption("Select a portfolio to see its underlying stock weights, PKR amounts, and share counts.")
 
                         portfolio_choice = st.selectbox(
@@ -2741,7 +2720,7 @@ with page:
                                 })
 
                         if comp_data:
-                            st.dataframe(pd.DataFrame(comp_data), use_container_width=True, hide_index=True)
+                            st.dataframe(pd.DataFrame(comp_data), width="stretch", hide_index=True)
                         else:
                             st.info("No composition data available for this selection.")
 
@@ -2749,7 +2728,7 @@ with page:
                     st.warning(f"Efficient frontier unavailable: {e}")
                 # ── Portfolio Comparison Mode ────────────────────────────
                 st.divider()
-                st.markdown("**Compare two portfolios**")
+                section("Compare two portfolios")
                 st.caption("Pick two sets of stocks and weights to compare side by side.")
 
                 compare_mode = st.checkbox("Enable comparison mode", key="enable_compare")
@@ -2830,7 +2809,7 @@ with page:
                                 cmp_df = cmp_result["stats_table"].copy()
                                 for col in ["Portfolio A", "Portfolio B", "Difference"]:
                                     cmp_df[col] = cmp_df[col].map("{:.2%}".format)
-                                st.dataframe(cmp_df, use_container_width=True, hide_index=True)
+                                st.dataframe(cmp_df, width="stretch", hide_index=True)
 
                                 fig_cmp = go.Figure()
                                 fig_cmp.add_trace(go.Scatter(
@@ -2850,8 +2829,7 @@ with page:
                                 fig_cmp.update_layout(**base_layout(tk, legend=True, height=350))
                                 fig_cmp.update_yaxes(title_text="Growth of PKR 100")
                                 fig_cmp.update_xaxes(dtick="M12", tickformat="%Y")
-                                st.plotly_chart(fig_cmp, theme=None, config=PLOTLY_CONFIG,
-                                                key="comparison_chart", use_container_width=True)
+                                chart(fig_cmp, "comparison_chart")
 
                                 ret_a = cmp_result["stats_a"]["Annual Return"]
                                 ret_b = cmp_result["stats_b"]["Annual Return"]
@@ -2899,10 +2877,10 @@ with page:
     else:
         st.info("Install reportlab to enable PDF export: `pip install reportlab`")
 
-st.space("large")
+hairline()
 
-# ── Data Provenance ────────────────────────────────────────────────────
-with st.expander("Data sources & methodology"):
+# ── Data provenance & full disclaimer: quiet footer, always present ────
+with st.expander("Data sources and methodology"):
     provenance = get_data_provenance()
     for key, info in provenance.items():
         as_of = info.get("as_of", "N/A")
@@ -2914,13 +2892,8 @@ with st.expander("Data sources & methodology"):
         )
         st.caption(info.get("description", ""))
 
-st.divider()
-
-# ── Full Disclaimer ───────────────────────────────────────────────────
-st.caption(get_disclaimer("full"))
-
-st.caption(
-    f"KSE 100 Portfolio Builder · historical data {DATA_START:%b %Y} – {DATA_END:%b %Y} (Investing.com), "
-    f"{ANNUAL_DIVIDEND_YIELD:.0%} dividend yield, {ANNUAL_FEE:.1%} fee · {tier} tier · {scenario} scenario · "
-    "Not investment advice."
-)
+footer([
+    get_disclaimer("full"),
+    f"{APP_NAME} · historical data {DATA_START:%b %Y} to {DATA_END:%b %Y} (Investing.com) · "
+    f"{_active_yield:.1%} dividend yield · {ANNUAL_FEE:.1%} fee · {tier} tier · {scenario} scenario.",
+])

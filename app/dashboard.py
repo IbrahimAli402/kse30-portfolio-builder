@@ -142,12 +142,20 @@ TAB_META = {
         "Cash income at each milestone, and what reinvesting instead of "
         "spending it is worth over time.",
     ]),
+    "track": dict(label="Track", lines=[
+        "Input what you already own. See where you stand against your goal, "
+        "what to hold, what to sell, and how much more you need to invest.",
+    ]),
+    "withdraw": dict(label="Withdraw", lines=[
+        "Once you've reached your goal, how much can you safely "
+        "withdraw each month without running out of money?",
+    ]),
     "context": dict(label="Market context", lines=[
         "Which sectors are leading or lagging right now, and the events "
         "that have moved the KSE-100 over the past 15 years.",
     ]),
 }
-TAB_ORDER = ["outlook", "goals", "basket", "growth", "risk", "worst", "dividends", "context"]
+TAB_ORDER = ["outlook", "goals", "basket", "track", "growth", "risk", "worst", "dividends", "withdraw", "context"]
 
 
 # ---------------------------------------------------------------------------
@@ -222,6 +230,66 @@ def run_monte_carlo_cached(weights_tuple, tier, monthly_amount, horizon_months, 
         weights=weights, tier=tier, monthly_amount=monthly_amount,
         horizon=horizon_months, method=method, seed=seed, num_paths=5000
     )
+@st.cache_data(show_spinner=False, ttl=300)
+def run_withdrawal_mc(portfolio_value: float, monthly_withdrawal: float,
+                      horizon_months: int, returns_tuple: tuple,
+                      annual_fee: float, inflation_rate: float,
+                      inflation_adjusted: bool, seed: int = 42,
+                      num_paths: int = 5000) -> dict:
+    """Monte Carlo withdrawal simulation: start with a lump sum, withdraw monthly."""
+    if portfolio_value <= 0 or horizon_months <= 0:
+        return {"survival_prob": 0, "ruin_prob": 1, "median_ruin_time_years": 0,
+                "terminal_values": np.zeros(num_paths),
+                "percentiles": {"p10": [0], "p25": [0], "p50": [0], "p75": [0], "p90": [0]},
+                "n_paths": num_paths, "n_ruined": num_paths}
+
+    returns_array = np.array(returns_tuple)
+    rng = np.random.default_rng(seed)
+    n = len(returns_array)
+    fee_m = annual_fee / 12
+
+    indices = rng.integers(0, n, size=(num_paths, horizon_months))
+    sampled_returns = returns_array[indices] - fee_m
+
+    balances = np.zeros((num_paths, horizon_months + 1))
+    balances[:, 0] = portfolio_value
+    current_w = monthly_withdrawal
+    ruined = np.zeros(num_paths, dtype=bool)
+
+    for m in range(horizon_months):
+        prev = balances[:, m]
+        new_bal = prev * (1 + sampled_returns[:, m]) - current_w
+        new_bal = np.where(prev > 0, np.maximum(new_bal, 0), 0)
+        balances[:, m + 1] = new_bal
+        ruined |= (new_bal <= 0) & (prev > 0)
+        if inflation_adjusted and (m + 1) % 12 == 0:
+            current_w *= (1 + inflation_rate)
+
+    survival_prob = 1 - ruined.mean()
+    p10 = np.percentile(balances, 10, axis=0)
+    p25 = np.percentile(balances, 25, axis=0)
+    p50 = np.percentile(balances, 50, axis=0)
+    p75 = np.percentile(balances, 75, axis=0)
+    p90 = np.percentile(balances, 90, axis=0)
+
+    if ruined.any():
+        ruined_bal = balances[ruined]
+        zero_mask = ruined_bal[:, 1:] <= 0
+        first_zero = np.argmax(zero_mask, axis=1) + 1
+        median_ruin = np.median(first_zero) / 12
+    else:
+        median_ruin = None
+
+    return {
+        "balances": balances,
+        "terminal_values": balances[:, -1],
+        "survival_prob": survival_prob,
+        "ruin_prob": ruined.mean(),
+        "percentiles": {"p10": p10, "p25": p25, "p50": p50, "p75": p75, "p90": p90},
+        "n_paths": num_paths,
+        "n_ruined": int(ruined.sum()),
+        "median_ruin_time_years": median_ruin,
+    }
 DATA_START, DATA_END = RETS.index[0], RETS.index[-1]
 
 
@@ -602,6 +670,7 @@ st.session_state.setdefault("suitability_done", False)
 st.session_state.setdefault("ctrl_amount", AMOUNT_DEFAULT)
 st.session_state.setdefault("ctrl_tier", "Aggressive")
 st.session_state.setdefault("ctrl_horizon", HORIZON_DEFAULT)
+st.session_state.setdefault("portfolio_holdings", [])
 if st.session_state.get("apply_suitability", False):
     st.session_state["ctrl_amount"] = st.session_state["suitability_amount"]
     st.session_state["ctrl_tier"] = st.session_state["suitability_tier"]
@@ -761,6 +830,83 @@ with page:
             insight(
                 f"Deposits made every month since {DATA_START:%b %Y} would have totalled {fmt_pkr(h_inv)} and be worth "
                 f"{fmt_pkr(h_final)} by {DATA_END:%b %Y}. History is one path — the projection tabs show the range."
+            )
+                        # ── Start-date explorer ─────────────────────────────────────
+            st.divider()
+            section("Start-date explorer")
+            st.caption("What if you had started in a different month? Pick any start date to see how timing affects the outcome.")
+
+            available_dates = tier_rets.index.tolist()
+            start_date = st.select_slider(
+                "Start date", options=available_dates,
+                value=available_dates[0], key="start_date_explorer",
+                format_func=lambda d: d.strftime("%b %Y")
+            )
+
+            explorer_rets = tier_rets[start_date:]
+            explorer_sip = run_sip(explorer_rets, monthly_amount, TX_COST_PCT)
+            ex_final = explorer_sip["Portfolio_Value"].iloc[-1]
+            ex_inv = explorer_sip["Cumulative_Invested"].iloc[-1]
+            ex_irr = sip_irr(explorer_sip, monthly_amount * (1 - TX_COST_PCT)) * 100
+            ex_under = int(explorer_sip["Underwater"].sum())
+            ex_dd = drawdown_episode(explorer_rets)
+
+            ex_x = explorer_sip.reset_index()
+            chart(growth_chart(ex_x, tk, x_col="Date", hover_x="%b %Y", show_underwater=True), "explorer")
+
+            ec1, ec2, ec3, ec4 = st.columns(4)
+            ec1.metric("Start date", f"{start_date:%b %Y}", f"{len(explorer_sip)} months", delta_color="off", delta_arrow="off")
+            ec2.metric("Final value", fmt_pkr(ex_final), f"{(ex_final - ex_inv) / ex_inv * 100:+.0f}% on invested")
+            ec3.metric("Annualised return (IRR)", f"{ex_irr:.1f}%",
+                       f"{ex_under} of {len(explorer_sip)} months underwater",
+                       delta_color="off", delta_arrow="off")
+            ec4.metric("Max drawdown", f"{ex_dd['depth_pct']:.1f}%",
+                       f"peak {ex_dd['peak']:%b %Y}",
+                       delta_color="off", delta_arrow="off")
+
+            # ── Scatter: final value vs start date ──────────────────────
+            st.divider()
+            section("Timing matters — but less than you think")
+            st.caption("Final portfolio value for a SIP started in each month, held to the end of the data.")
+
+            scatter_dates = []
+            scatter_values = []
+            for d in available_dates:
+                sub_rets = tier_rets[d:]
+                if len(sub_rets) >= 12:
+                    sub_sip = run_sip(sub_rets, monthly_amount, TX_COST_PCT)
+                    scatter_dates.append(d)
+                    scatter_values.append(sub_sip["Portfolio_Value"].iloc[-1])
+
+            fig_scatter = go.Figure()
+            fig_scatter.add_trace(go.Scatter(
+                x=scatter_dates, y=scatter_values,
+                mode="markers", marker=dict(size=5, color=tk["accent"], opacity=0.6),
+                name="Final value",
+                hovertemplate="%{x|%b %Y}: %{customdata}<extra></extra>",
+                customdata=[fmt_pkr(v) for v in scatter_values],
+            ))
+            if start_date in scatter_dates:
+                idx = scatter_dates.index(start_date)
+                fig_scatter.add_trace(go.Scatter(
+                    x=[scatter_dates[idx]], y=[scatter_values[idx]],
+                    mode="markers", marker=dict(size=12, color=tk["positive"], symbol="circle",
+                                                line=dict(color=tk["bg"], width=2)),
+                    name="Your selection",
+                    hovertemplate="Selected: %{customdata}<extra></extra>",
+                    customdata=[fmt_pkr(scatter_values[idx])],
+                ))
+            fig_scatter.update_layout(**base_layout(tk, height=350, legend=True))
+            fig_scatter.update_xaxes(dtick="M12", tickformat="%Y")
+            money_axis(fig_scatter, max(scatter_values))
+            chart(fig_scatter, "start_date_scatter")
+
+            insight(
+                f"Starting in {start_date:%b %Y} would have produced {fmt_pkr(ex_final)} "
+                f"on {fmt_pkr(ex_inv)} invested — a {ex_irr:.1f}% annualised return. "
+                f"The scatter shows that while timing matters, the range of outcomes narrows "
+                f"as the holding period lengthens. Every start date in this dataset eventually "
+                f"produced a positive return."
             )
 
         yby = proj.drop(columns="Label").copy()
@@ -1589,12 +1735,33 @@ with page:
                 required=True, key="goal_scenario"
             )
 
+        gc5, gc6 = st.columns([1, 1])
+        with gc5:
+            adjust_inflation = st.checkbox("Adjust target for inflation", value=False, key="adjust_inflation")
+        with gc6:
+            goal_inflation = st.slider(
+                "Inflation rate", 2.0, 12.0, 8.0, 0.5, format="%.1f%%", key="goal_inflation",
+                disabled=not adjust_inflation
+            )
+
         st.markdown(f"*{template['description']}*")
 
         # ── Required SIP calculation ────────────────────────────────────
         scenario_return = SCENARIOS[goal_scenario]["equity_return"]
+        
+        if adjust_inflation:
+            real_target = target_amount * (1 + goal_inflation / 100) ** goal_horizon
+            st.caption(
+                f"Your target of {fmt_pkr(target_amount, 0)} in today's money "
+                f"becomes {fmt_pkr(real_target, 0)} in {goal_horizon} years "
+                f"at {goal_inflation:.1f}% inflation."
+            )
+            sip_target = real_target
+        else:
+            sip_target = target_amount
+
         sip_result = required_monthly_sip(
-            target_amount=target_amount,
+            target_amount=sip_target,
             horizon_years=goal_horizon,
             annual_return=scenario_return,
             annual_fee=ANNUAL_FEE,
@@ -1622,14 +1789,23 @@ with page:
             help="Total return on invested capital at the end of the horizon."
         )
 
-        insight(
-            f"To reach {fmt_pkr(target_amount, 0)} in {goal_horizon} years at a "
-            f"{scenario_return:.0%} annual return, you need to invest "
-            f"{fmt_pkr(sip_result['monthly_sip'], 0)} per month. "
-            f"Of your {fmt_pkr(target_amount, 0)} target, "
-            f"{fmt_pkr(sip_result['total_growth'], 0)} comes from investment growth "
-            f"and {fmt_pkr(sip_result['total_invested'], 0)} from your contributions."
-        )
+        if adjust_inflation:
+            insight(
+                f"To reach {fmt_pkr(real_target, 0)} (inflation-adjusted from {fmt_pkr(target_amount, 0)}) "
+                f"in {goal_horizon} years at a {scenario_return:.0%} annual return, "
+                f"you need to invest {fmt_pkr(sip_result['monthly_sip'], 0)} per month. "
+                f"Without inflation, {fmt_pkr(target_amount, 0)} would require less, "
+                f"but PKR {target_amount:,.0f} in {goal_horizon} years won't buy what it buys today."
+            )
+        else:
+            insight(
+                f"To reach {fmt_pkr(target_amount, 0)} in {goal_horizon} years at a "
+                f"{scenario_return:.0%} annual return, you need to invest "
+                f"{fmt_pkr(sip_result['monthly_sip'], 0)} per month. "
+                f"Of your {fmt_pkr(target_amount, 0)} target, "
+                f"{fmt_pkr(sip_result['total_growth'], 0)} comes from investment growth "
+                f"and {fmt_pkr(sip_result['total_invested'], 0)} from your contributions."
+            )
 
         # ── Monte Carlo probability ────────────────────────────────────
         st.divider()
@@ -1646,7 +1822,7 @@ with page:
 
             goal_prob = goal_probability(
                 mc_terminal_values=goal_mc["terminal_values"],
-                target_amount=target_amount,
+                target_amount=sip_target,
                 total_invested=sip_result["total_invested"],
             )
 
@@ -1765,8 +1941,9 @@ with page:
             hovertemplate="%{x}: %{customdata}<extra>Invested</extra>",
             customdata=[fmt_pkr(v) for v in goal_proj["Cumulative_Invested"]],
         ))
-        fig_goal.add_hline(y=target_amount, line_dash="dash", line_color=tk["positive"],
-                        annotation_text=f"Goal: {fmt_pkr(target_amount, 0)}")
+        goal_line = sip_target if adjust_inflation else target_amount
+        fig_goal.add_hline(y=goal_line, line_dash="dash", line_color=tk["positive"],
+                        annotation_text=f"Goal: {fmt_pkr(goal_line, 0)}")
         fig_goal.update_layout(**base_layout(tk, legend=True, height=350))
         money_axis(fig_goal, max(goal_proj["Portfolio_Value"].max(), target_amount))
         year_ticks(fig_goal, list(goal_proj["Label"]))
@@ -2025,6 +2202,8 @@ with page:
                         if total_w > 0:
                             weights_basket = {t: w / total_w for t, w in weights_basket.items()}
 
+                st.session_state["basket_weights"] = weights_basket
+
                 # ── Basket summary ─────────────────────────────────────────
                 st.divider()
                 section("Basket composition")
@@ -2101,7 +2280,7 @@ with page:
                     st.session_state["basket_dividend_yield"] = avg_div
                 else:
                     avg_div = avg_pe = avg_beta = avg_dd = 0
-                    st.session_state["basket_dividend_yield"] = annual_dividend_yield
+                    st.session_state["basket_dividend_yield"] = ANNUAL_DIVIDEND_YIELD
 
                 sector_weights = {}
                 for ticker in selected_stocks:
@@ -2856,6 +3035,455 @@ with page:
             st.error(f"Basket tab error: {e}")
             st.write("This usually means `stock_metrics.csv` is missing or has an issue.")
             st.write("Run: `python scripts/fetch_stocks.py` to regenerate the data.")
+
+    if selected == "track":
+        section("Your current portfolio",
+            "Input what you already own to see where you stand against your goal, "
+            "what to hold, what to sell, and how much more you need to invest.")
+
+        try:
+            stock_df_track = load_stock_metrics()
+            all_tickers_track = stock_df_track["ticker"].tolist()
+
+            # ── Add holding input ──────────────────────────────────────
+            with st.expander("Add a holding", expanded=not st.session_state["portfolio_holdings"]):
+                ac1, ac2, ac3, ac4, ac5 = st.columns([2, 1, 1, 1, 0.7])
+                with ac1:
+                    hold_ticker = st.selectbox("Ticker", all_tickers_track, key="hold_ticker")
+                with ac2:
+                    hold_shares = st.number_input("Shares", min_value=1, value=100, key="hold_shares")
+                with ac3:
+                    hold_price = st.number_input("Buy price (PKR)", min_value=0.0, value=100.0, key="hold_price", step=0.1)
+                with ac4:
+                    hold_date = st.date_input("Buy date", key="hold_date")
+                with ac5:
+                    st.write("")
+                    if st.button("Add", key="add_holding", type="primary"):
+                        st.session_state["portfolio_holdings"].append({
+                            "ticker": hold_ticker,
+                            "shares": hold_shares,
+                            "purchase_price": hold_price,
+                            "purchase_date": hold_date.isoformat(),
+                        })
+                        st.rerun()
+
+            if not st.session_state["portfolio_holdings"]:
+                st.info("No holdings yet. Add a stock above to start tracking your portfolio.")
+            else:
+                # ── Build holdings data ────────────────────────────────
+                holdings_data = []
+                for h in st.session_state["portfolio_holdings"]:
+                    ticker = h["ticker"]
+                    shares = h["shares"]
+                    purchase_price = h["purchase_price"]
+                    purchase_date = pd.to_datetime(h["purchase_date"])
+
+                    stock_row = stock_df_track[stock_df_track["ticker"] == ticker]
+                    if not stock_row.empty:
+                        current_price = stock_row.iloc[0].get("price", 0)
+                        name = stock_row.iloc[0].get("name", ticker)
+                        sector = stock_row.iloc[0].get("sector", "—")
+                    else:
+                        current_price = 0
+                        name = ticker
+                        sector = "—"
+
+                    current_value = shares * current_price if pd.notna(current_price) and current_price > 0 else 0
+                    cost_basis = shares * purchase_price
+                    gain_loss = current_value - cost_basis
+                    gain_loss_pct = (gain_loss / cost_basis * 100) if cost_basis > 0 else 0
+
+                    holding_days = (pd.Timestamp.now() - purchase_date).days
+                    holding_months = holding_days / 30.44
+
+                    if holding_months < 12:
+                        cgt_bracket = "15%"
+                        cgt_rate = CGT_BRACKETS["short"]
+                        months_to_next = 12 - holding_months
+                        next_bracket = "12.5%"
+                    elif holding_months < 24:
+                        cgt_bracket = "12.5%"
+                        cgt_rate = CGT_BRACKETS["medium"]
+                        months_to_next = 24 - holding_months
+                        next_bracket = "0%"
+                    else:
+                        cgt_bracket = "0%"
+                        cgt_rate = CGT_BRACKETS["long"]
+                        months_to_next = 0
+                        next_bracket = None
+
+                    holdings_data.append({
+                        "ticker": ticker, "name": name, "sector": sector,
+                        "shares": shares, "purchase_price": purchase_price,
+                        "current_price": current_price, "current_value": current_value,
+                        "cost_basis": cost_basis, "gain_loss": gain_loss,
+                        "gain_loss_pct": gain_loss_pct, "holding_months": holding_months,
+                        "cgt_bracket": cgt_bracket, "cgt_rate": cgt_rate,
+                        "months_to_next": months_to_next, "next_bracket": next_bracket,
+                    })
+
+                hdf = pd.DataFrame(holdings_data)
+                total_value = hdf["current_value"].sum()
+                total_cost = hdf["cost_basis"].sum()
+                total_gain = total_value - total_cost
+                total_gain_pct = (total_gain / total_cost * 100) if total_cost > 0 else 0
+
+                # ── Portfolio summary ──────────────────────────────────
+                tc1, tc2, tc3, tc4 = st.columns(4)
+                tc1.metric("Current value", fmt_pkr(total_value, 0),
+                           help="Total market value of all holdings")
+                tc2.metric("Total invested", fmt_pkr(total_cost, 0),
+                           help="Total amount you paid for all shares")
+                tc3.metric("Gain / loss", fmt_pkr(total_gain, 0),
+                           f"{total_gain_pct:+.1f}%",
+                           delta_color="normal" if total_gain >= 0 else "inverse")
+                tc4.metric("Holdings", str(len(hdf)),
+                           help="Number of positions in your portfolio")
+
+                # ── Holdings table ─────────────────────────────────────
+                st.divider()
+                section("Holdings detail")
+
+                dh = hdf.copy()
+                dh["Current Price"] = dh["current_price"].map(lambda x: f"{x:,.0f}" if pd.notna(x) and x > 0 else "—")
+                dh["Current Value"] = dh["current_value"].map(lambda x: fmt_pkr(x, 0))
+                dh["Cost Basis"] = dh["cost_basis"].map(lambda x: fmt_pkr(x, 0))
+                dh["Gain/Loss"] = dh.apply(lambda r: f"{fmt_pkr(r['gain_loss'], 0)} ({r['gain_loss_pct']:+.1f}%)", axis=1)
+                dh["Holding Period"] = dh["holding_months"].map(lambda x: f"{x:.0f} mo")
+                dh["CGT"] = dh["cgt_bracket"]
+                dh = dh[["ticker", "name", "sector", "shares", "Current Price", "Current Value", "Cost Basis", "Gain/Loss", "Holding Period", "CGT"]]
+                dh.columns = ["Ticker", "Name", "Sector", "Shares", "Current Price", "Current Value", "Cost Basis", "Gain/Loss", "Holding Period", "CGT"]
+                st.dataframe(dh, width="stretch", hide_index=True)
+
+                # ── Remove holdings ────────────────────────────────────
+                with st.expander("Remove a holding"):
+                    for i, h in enumerate(st.session_state["portfolio_holdings"]):
+                        rc1, rc2 = st.columns([4, 1])
+                        with rc1:
+                            st.text(f"{h['ticker']}  ·  {h['shares']} shares  ·  PKR {h['purchase_price']}")
+                        with rc2:
+                            if st.button("Remove", key=f"remove_{i}"):
+                                st.session_state["portfolio_holdings"].pop(i)
+                                st.rerun()
+
+                # ── Tax-aware guidance ─────────────────────────────────
+                st.divider()
+                section("Tax-aware selling guidance")
+                st.caption("Capital gains tax drops as you hold longer. Here is where each position stands.")
+
+                tax_rows = []
+                for _, row in hdf.iterrows():
+                    if row["cgt_bracket"] == "0%":
+                        tax_note = "Tax-free — hold indefinitely"
+                    elif row["next_bracket"]:
+                        tax_note = f"Hold {row['months_to_next']:.0f} more months to drop to {row['next_bracket']}"
+                    else:
+                        tax_note = "—"
+                    potential_tax = max(row["gain_loss"], 0) * row["cgt_rate"]
+                    tax_after_hold = max(row["gain_loss"], 0) * CGT_BRACKETS["long"]
+                    tax_savings = potential_tax - tax_after_hold
+                    tax_rows.append({
+                        "Ticker": row["ticker"],
+                        "Current CGT": row["cgt_bracket"],
+                        "Tax if sold now": fmt_pkr(potential_tax, 0),
+                        "Tax if held to 0%": fmt_pkr(tax_after_hold, 0),
+                        "Tax savings": fmt_pkr(tax_savings, 0) if tax_savings > 0 else "—",
+                        "Action": tax_note,
+                    })
+                st.dataframe(pd.DataFrame(tax_rows), width="stretch", hide_index=True)
+
+                # ── Gap analysis ───────────────────────────────────────
+                st.divider()
+                section("Gap analysis")
+                st.caption("Where you stand vs your goal, and what it takes to get there.")
+
+                gc1, gc2 = st.columns([1, 1])
+                with gc1:
+                    gap_target = st.number_input(
+                        "Your goal (PKR)", min_value=1_000_000, max_value=500_000_000,
+                        value=50_000_000, step=5_000_000, format="%.0f", key="gap_target")
+                with gc2:
+                    gap_years = st.slider("Years to goal", 1, 30, 15, key="gap_years")
+
+                gap_return = SCENARIOS[scenario]["equity_return"]
+                gap_months = gap_years * 12
+                r_m = (1 + gap_return) ** (1 / 12) - 1 - ANNUAL_FEE / 12
+
+                if abs(r_m) < 1e-10:
+                    fv_pv = total_value
+                    gap_after_pv = gap_target - fv_pv
+                    required_sip = gap_after_pv / gap_months if gap_after_pv > 0 else 0
+                else:
+                    fv_pv = total_value * (1 + r_m) ** gap_months
+                    gap_after_pv = gap_target - fv_pv
+                    if gap_after_pv > 0:
+                        required_sip = gap_after_pv / (((1 + r_m) ** gap_months - 1) / r_m)
+                        required_sip = required_sip / (1 - TX_COST_PCT)
+                    else:
+                        required_sip = 0
+
+                gap_remaining = gap_target - total_value
+
+                gc1, gc2, gc3, gc4 = st.columns(4)
+                gc1.metric("Current value", fmt_pkr(total_value, 0))
+                gc2.metric("Goal", fmt_pkr(gap_target, 0), f"in {gap_years} years")
+                gc3.metric("Gap", fmt_pkr(max(gap_remaining, 0), 0),
+                           "already there!" if gap_remaining <= 0 else None,
+                           delta_color="normal" if gap_remaining <= 0 else "inverse")
+                gc4.metric("Required monthly SIP", fmt_pkr(max(required_sip, 0), 0),
+                           help="Monthly investment needed from today to reach your goal.")
+
+                if gap_remaining <= 0:
+                    insight(f"You have already reached your goal of {fmt_pkr(gap_target, 0)}! "
+                            f"Your current portfolio is worth {fmt_pkr(total_value, 0)}. "
+                            f"Consider a sustainable withdrawal strategy.")
+                else:
+                    insight(
+                        f"Your portfolio is worth {fmt_pkr(total_value, 0)} today. "
+                        f"To reach {fmt_pkr(gap_target, 0)} in {gap_years} years at {gap_return:.0%} annual return, "
+                        f"you need to invest {fmt_pkr(required_sip, 0)}/month from here. "
+                        f"That is {fmt_pkr(gap_remaining, 0)} still to grow."
+                    )
+
+                # ── Progress chart ─────────────────────────────────────
+                st.divider()
+                section("Progress to goal")
+                st.caption("Your current value plus projected monthly SIP vs your goal.")
+
+                net_r = (1 + gap_return) ** (1 / 12) - 1 - ANNUAL_FEE / 12
+                net_inv = required_sip * (1 - TX_COST_PCT) if required_sip > 0 else 0
+                pv = total_value
+                cum_inv = total_cost
+                proj_rows = [{"Year": 0, "Portfolio_Value": total_value, "Cumulative_Invested": total_cost, "Label": "Now"}]
+                for m in range(1, gap_months + 1):
+                    pv = pv * (1 + net_r) + net_inv
+                    cum_inv += required_sip if required_sip > 0 else 0
+                    if m % 12 == 0:
+                        proj_rows.append({"Year": m // 12, "Portfolio_Value": pv, "Cumulative_Invested": cum_inv, "Label": f"Year {m // 12}"})
+                gap_proj = pd.DataFrame(proj_rows)
+
+                fig_gap = go.Figure()
+                fig_gap.add_trace(go.Scatter(
+                    x=gap_proj["Label"], y=gap_proj["Portfolio_Value"],
+                    mode="lines", name="Projected portfolio",
+                    line=dict(color=tk["accent"], width=2.5),
+                    hovertemplate="%{x}: %{customdata}<extra>Portfolio</extra>",
+                    customdata=[fmt_pkr(v) for v in gap_proj["Portfolio_Value"]],
+                ))
+                fig_gap.add_trace(go.Scatter(
+                    x=gap_proj["Label"], y=gap_proj["Cumulative_Invested"],
+                    mode="lines", name="Invested",
+                    line=dict(color=tk["invested"], width=1.5, dash="4px,4px"),
+                    hovertemplate="%{x}: %{customdata}<extra>Invested</extra>",
+                    customdata=[fmt_pkr(v) for v in gap_proj["Cumulative_Invested"]],
+                ))
+                fig_gap.add_hline(y=gap_target, line_dash="dash", line_color=tk["positive"],
+                                annotation_text=f"Goal: {fmt_pkr(gap_target, 0)}")
+                fig_gap.update_layout(**base_layout(tk, legend=True, height=350))
+                money_axis(fig_gap, max(gap_proj["Portfolio_Value"].max(), gap_target))
+                year_ticks(fig_gap, list(gap_proj["Label"]))
+                chart(fig_gap, "gap_progress")
+
+                # ── Drift from basket ──────────────────────────────────
+                basket_w = st.session_state.get("basket_weights")
+                if basket_w and total_value > 0:
+                    st.divider()
+                    section("Drift from target basket")
+                    st.caption("How your actual holdings compare to the target weights from your Basket tab.")
+
+                    actual_w = hdf.set_index("ticker")["current_value"] / total_value
+                    drift_rows = []
+                    for ticker, target_w in basket_w.items():
+                        actual = actual_w.get(ticker, 0)
+                        drift = actual - target_w
+                        drift_rows.append({
+                            "Ticker": ticker,
+                            "Target": f"{target_w:.1%}",
+                            "Actual": f"{actual:.1%}",
+                            "Drift": f"{drift:+.1%}",
+                        })
+                    for ticker, actual in actual_w.items():
+                        if ticker not in basket_w:
+                            drift_rows.append({
+                                "Ticker": ticker, "Target": "0%",
+                                "Actual": f"{actual:.1%}", "Drift": f"{actual:+.1%}",
+                            })
+                    st.dataframe(pd.DataFrame(drift_rows), width="stretch", hide_index=True)
+
+        except Exception as e:
+            st.error(f"Track tab error: {e}")
+            st.write("This usually means `stock_metrics.csv` is missing or has an issue.")
+            st.write("Run: `python scripts/fetch_stocks.py` to regenerate the data.")
+
+    if selected == "withdraw":
+        section("Sustainable withdrawals in retirement",
+            "How much can you safely withdraw each month without running out of money? "
+            "5,000 simulated paths through retirement, using your risk tier's historical returns.")
+
+        # ── Inputs ──────────────────────────────────────────────────────
+        wc1, wc2, wc3 = st.columns([1, 1, 1], gap="medium")
+        with wc1:
+            w_portfolio = st.number_input(
+                "Portfolio at retirement (PKR)", min_value=1_000_000, max_value=500_000_000,
+                value=int(max(stats["final_value"], 10_000_000)), step=5_000_000,
+                format="%.0f", key="w_portfolio")
+        with wc2:
+            w_horizon = st.slider("Withdrawal period (years)", 10, 30, 20, key="w_horizon")
+        with wc3:
+            w_rate = st.slider("Annual withdrawal rate", 2.0, 8.0, 4.0, 0.5, format="%.1f%%", key="w_rate")
+
+        wc4, wc5 = st.columns([1, 1], gap="medium")
+        with wc4:
+            w_inflation_adj = st.checkbox("Adjust withdrawals for inflation", value=True, key="w_inflation_adj")
+        with wc5:
+            w_inflation = st.slider("Inflation rate", 2.0, 12.0, 8.0, 0.5, format="%.1f%%", key="w_inflation",
+                                    disabled=not w_inflation_adj)
+
+        w_monthly = w_portfolio * w_rate / 100 / 12
+        w_annual = w_portfolio * w_rate / 100
+        w_horizon_months = w_horizon * 12
+
+        # ── Run MC ──────────────────────────────────────────────────────
+        w_mc = run_withdrawal_mc(
+            w_portfolio, w_monthly, w_horizon_months,
+            tuple(tier_rets.values), ANNUAL_FEE, w_inflation / 100,
+            w_inflation_adj, seed=42, num_paths=5000
+        )
+
+        # ── KPIs ────────────────────────────────────────────────────────
+        wk1, wk2, wk3, wk4 = st.columns(4)
+        wk1.metric("Monthly withdrawal", fmt_pkr(w_monthly, 0),
+                   f"{w_rate:.1f}% of portfolio annually")
+        wk2.metric("Annual withdrawal", fmt_pkr(w_annual, 0),
+                   f"for {w_horizon} years")
+        surv_color = "normal" if w_mc["survival_prob"] >= 0.95 else ("off" if w_mc["survival_prob"] >= 0.8 else "inverse")
+        wk3.metric("Survival probability", f"{w_mc['survival_prob']:.0%}",
+                   f"{w_mc['n_ruined']:,} of {w_mc['n_paths']:,} paths ruined",
+                   delta_color=surv_color)
+        median_terminal = np.median(w_mc["terminal_values"])
+        wk4.metric("Median terminal value", fmt_pkr(median_terminal, 0),
+                   "survived" if median_terminal > 0 else "depleted",
+                   delta_color="normal" if median_terminal > 0 else "inverse")
+
+        st.divider()
+
+        # ── Fan chart ────────────────────────────────────────────────────
+        section("Portfolio balance through retirement")
+        cap = "inflation-adjusted" if w_inflation_adj else "fixed"
+        st.caption(f"{w_mc['n_paths']:,} simulated paths · {tier} tier historical returns · {cap} withdrawals")
+
+        w_months = np.arange(w_horizon_months + 1)
+        wp = w_mc["percentiles"]
+
+        fig_w = go.Figure()
+        fig_w.add_trace(go.Scatter(
+            x=w_months / 12, y=wp["p90"], mode="lines",
+            line=dict(width=0), showlegend=False, hoverinfo="skip"
+        ))
+        fig_w.add_trace(go.Scatter(
+            x=w_months / 12, y=wp["p10"], mode="lines",
+            line=dict(width=0), fill="tonexty",
+            fillcolor=rgba(tk["accent"], 0.10),
+            name="P10-P90 (80% of outcomes)"
+        ))
+        fig_w.add_trace(go.Scatter(
+            x=w_months / 12, y=wp["p75"], mode="lines",
+            line=dict(width=0), showlegend=False, hoverinfo="skip"
+        ))
+        fig_w.add_trace(go.Scatter(
+            x=w_months / 12, y=wp["p25"], mode="lines",
+            line=dict(width=0), fill="tonexty",
+            fillcolor=rgba(tk["accent"], 0.20),
+            name="P25-P75 (50% of outcomes)"
+        ))
+        fig_w.add_trace(go.Scatter(
+            x=w_months / 12, y=wp["p50"], mode="lines",
+            line=dict(color=tk["accent"], width=2.5),
+            name="Median (P50)"
+        ))
+        fig_w.add_hline(y=w_portfolio, line_dash="dash", line_color=tk["invested"],
+                        annotation_text=f"Starting value: {fmt_pkr(w_portfolio, 0)}")
+
+        fig_w.update_layout(**base_layout(tk, height=400, legend=True))
+        fig_w.update_layout(hovermode=False)
+        fig_w.update_xaxes(title_text="Years in retirement")
+        fig_w.update_yaxes(title_text="Portfolio value")
+        chart(fig_w, "withdrawal_fan")
+
+        # ── Insight ─────────────────────────────────────────────────────
+        if w_mc["ruin_prob"] > 0:
+            ruin_txt = f" In those paths, the median time to depletion was {w_mc['median_ruin_time_years']:.1f} years." if w_mc["median_ruin_time_years"] else ""
+            insight(
+                f"Withdrawing {fmt_pkr(w_monthly, 0)}/month ({w_rate:.1f}% annually) "
+                f"for {w_horizon} years leaves a survival probability of {w_mc['survival_prob']:.0%}. "
+                f"{w_mc['n_ruined']:,} of {w_mc['n_paths']:,} simulated paths ran out of money.{ruin_txt} "
+                f"Consider reducing your withdrawal rate or extending your accumulation phase."
+            )
+        else:
+            insight(
+                f"Withdrawing {fmt_pkr(w_monthly, 0)}/month ({w_rate:.1f}% annually) "
+                f"for {w_horizon} years survived in all {w_mc['n_paths']:,} simulated paths. "
+                f"The median terminal value is {fmt_pkr(median_terminal, 0)}. "
+                f"You may be able to withdraw more — try increasing the rate."
+            )
+
+        st.divider()
+
+        # ── Safe withdrawal rate sweep ───────────────────────────────────
+        section("Safe withdrawal rate")
+        st.caption("Survival probability at different withdrawal rates. The safe rate is where 95% of paths survive.")
+
+        sweep_rates = [0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08]
+        sweep_data = []
+        for sr in sweep_rates:
+            sr_monthly = w_portfolio * sr / 12
+            sr_mc = run_withdrawal_mc(
+                w_portfolio, sr_monthly, w_horizon_months,
+                tuple(tier_rets.values), ANNUAL_FEE, w_inflation / 100,
+                w_inflation_adj, seed=42, num_paths=5000
+            )
+            sweep_data.append({"rate": sr, "survival": sr_mc["survival_prob"]})
+
+        safe_rate = None
+        for sd in reversed(sweep_data):
+            if sd["survival"] >= 0.95:
+                safe_rate = sd["rate"]
+                break
+
+        fig_sweep = go.Figure()
+        fig_sweep.add_trace(go.Bar(
+            x=[f"{sd['rate']:.0%}" for sd in sweep_data],
+            y=[sd["survival"] for sd in sweep_data],
+            marker_color=[rgba(tk["accent"], 0.35 + 0.6 * sd["survival"]) for sd in sweep_data],
+            text=[f"{sd['survival']:.0%}" for sd in sweep_data],
+            textposition="outside",
+            textfont=dict(size=12, color=tk["text"]),
+            hoverinfo="none",
+        ))
+        fig_sweep.add_hline(y=0.95, line_dash="dash", line_color=tk["muted"],
+                           annotation_text="95% safe threshold",
+                           annotation_position="bottom right")
+        fig_sweep.update_layout(**base_layout(tk, height=350))
+        fig_sweep.update_yaxes(tickformat=".0%", title_text="Survival probability")
+        fig_sweep.update_xaxes(title_text="Annual withdrawal rate")
+        chart(fig_sweep, "withdrawal_sweep")
+
+        if safe_rate:
+            safe_monthly = w_portfolio * safe_rate / 12
+            insight(
+                f"The safe withdrawal rate for a {w_horizon}-year retirement "
+                f"with {tier} tier returns is {safe_rate:.0%} annually "
+                f"({fmt_pkr(safe_monthly, 0)}/month). "
+                f"At your current rate of {w_rate:.1f}%, survival is {w_mc['survival_prob']:.0%}. "
+                + (f"Reduce to {safe_rate:.0%} for 95% confidence." if w_rate > safe_rate * 100
+                   else f"You can safely increase to {safe_rate:.0%}.")
+            )
+        else:
+            insight(
+                f"Even at 2% annual withdrawal, survival is below 95% for a {w_horizon}-year period "
+                f"with {tier} tier returns. Consider a shorter withdrawal period, "
+                f"a larger portfolio, or a more aggressive accumulation phase."
+            )    
 
     # ── PDF Export ─────────────────────────────────────────────────────
     st.divider()

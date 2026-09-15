@@ -13,6 +13,8 @@ The app helps you:
 - **Project** — See forward-looking portfolio growth with Monte Carlo probability distributions
 - **Assess risk** — View drawdowns, VaR, crisis scenarios, and probability of loss
 - **Build portfolios** — Screen KSE-30 stocks, construct efficient frontiers, recommend minimum-variance portfolios
+- **Track** — Input existing holdings, see gain/loss, tax-aware selling guidance, and gap analysis vs your goal
+- **Withdraw** — Plan sustainable retirement withdrawals with Monte Carlo survival probability
 - **Compare** — Benchmark against the KSE-100 index (alpha, beta, capture ratios) and mutual funds (fee drag)
 - **Contextualize** — See returns in PKR and USD, compare equities to gold and real estate
 - **Guide** — Get rebalancing guidance with cost estimation and tax considerations
@@ -20,18 +22,20 @@ The app helps you:
 
 ---
 
-## Dashboard Tabs (8)
+## Dashboard Tabs (10)
 
 | Tab | Features |
 |-----|----------|
-| **Growth** | SIP projection, scenario comparison, historical backtest, market event overlay |
-| **Dividends** | Dividend milestones, DRIP (reinvestment) vs cash comparison |
+| **Forecast** | Monte Carlo fan chart (5,000 paths), terminal wealth distribution, probability table, what-if sliders, building block decomposition, nominal/real and PKR/USD toggles |
+| **Goals** | Goal-based investing (university, retirement, house, custom), required SIP, probability of success, cost of delay, inflation-adjusted targets |
+| **Basket** | KSE-30 stock picker, 5-pillar screen, Markowitz efficient frontier, minimum-variance recommendation, benchmark comparison (alpha/beta/capture), rebalancing guidance, mutual fund comparison (fee drag), liquidity profile, portfolio comparison mode |
+| **Track** | Input existing holdings, gain/loss tracking, tax-aware selling guidance (CGT brackets), gap analysis vs goal, progress chart, drift from target basket |
+| **Growth** | SIP projection, scenario comparison, historical backtest, market event overlay, start-date explorer with scatter plot |
 | **Risk** | Probability of loss, drawdown analysis, VaR/CVaR, stress testing (4 crises), sector concentration, correlation regime analysis, currency-adjusted returns (PKR to USD), multi-asset comparison (gold, USD, real estate) |
 | **Worst Case** | Worst-time-to-start SIP backtest |
-| **Outlook** | Monte Carlo fan chart (5,000 paths), terminal wealth distribution, probability table, what-if sliders, building block decomposition |
-| **Goals** | Goal-based investing (university, retirement, house, custom), required SIP, probability of success, cost of delay |
+| **Dividends** | Dividend milestones (dynamic yield from basket), DRIP (reinvestment) vs cash comparison |
+| **Withdraw** | Monte Carlo withdrawal simulation (5,000 paths), survival probability, fan chart, safe withdrawal rate sweep (2-8%), inflation-adjusted withdrawals |
 | **Market Context** | Political/IMF event timeline, sector rotation dashboard (relative strength, momentum scores, quadrant scatter) |
-| **Basket** | KSE-30 stock picker, 5-pillar screen, Markowitz efficient frontier, minimum-variance recommendation, benchmark comparison (alpha/beta/capture), rebalancing guidance, mutual fund comparison (fee drag), liquidity profile, portfolio comparison mode |
 
 ---
 
@@ -45,6 +49,17 @@ The app helps you:
 - **Reporting:** reportlab (PDF generation)
 - **Automation:** GitHub Actions (nightly price, dividend, and volume updates)
 - **Deployment:** Streamlit Cloud
+
+---
+
+## Design System ("Quiet Ledger")
+
+A custom tokenised CSS design system with 13 colour tokens, 9 UI primitives, and a 110-term glossary with fuzzy search. Dark mode only. Design lineage from Cosmos (editorial canvas), Apple (surface rhythm), Dala (scale hierarchy), and SeatGeek (dialog craft).
+
+| File | Purpose |
+|------|---------|
+| `kse/design_system.py` | Colour tokens, CSS layer, UI primitives (`page_header`, `section`, `insight`, `band`, `hairline`, `footer`) |
+| `kse/glossary.py` | 110 finance terms (beginner to expert) + 12 FAQ, 5-stage fuzzy matching engine, clickable search dialog |
 
 ---
 
